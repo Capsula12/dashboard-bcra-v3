@@ -209,7 +209,7 @@ if df.empty:
     st.stop()
 
 # Tabs (sin “Porcentaje del total”)
-tab_panel, tab_serie, tab_calc = st.tabs(["Panel", "Serie", "Calculadora"])
+tab_panel, tab_serie, tab_calc, tab_rank = st.tabs(["Panel", "Serie", "Calculadora", "Rankings"])
 
 # ===================== PANEL =====================
 with tab_panel:
@@ -551,6 +551,147 @@ with tab_calc:
 
                 with st.expander("Ver datos"):
                     st.dataframe(pivot[["Entidad","fecha_dt","Resultado"]].sort_values(["Entidad","fecha_dt"]), use_container_width=True)
+
+
+# ===================== RANKINGS =====================
+with tab_rank:
+    st.subheader("Rankings")
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        # Variable a rankear
+        var_rank = st.selectbox(
+            "Variable",
+            options=sorted(df["codigo_indicador"].unique().tolist(), key=lambda v: var_map.get(v, v)),
+            index=0,
+            format_func=lambda v: var_map.get(v, v),
+            key="rank_var",
+        )
+
+        # Rango temporal
+        min_dt = df["fecha_dt"].min().date()
+        max_dt = df["fecha_dt"].max().date()
+        default_start = date(max_dt.year - 1, max_dt.month, 1) if (max_dt.year - min_dt.year) >= 1 else min_dt
+        range_rank = st.slider(
+            "Rango temporal",
+            min_value=min_dt, max_value=max_dt,
+            value=(default_start, max_dt),
+            key="rank_range"
+        )
+
+        topn = st.number_input("Top N", min_value=3, max_value=50, value=10, step=1, key="rank_topn")
+
+        fmt_rank = str(fmt_map.get(var_rank, "N")).upper()
+        if fmt_rank == "P":
+            st.caption("📌 La variable es porcentual: en “Valores totales” se usa **promedio** del período (no suma).")
+
+    with c2:
+        # Filtrar: excluir entidades agrupadas (codigos que empiezan con 'AA')
+        df_rank = df[~df["codigo_entidad"].str.startswith("AA", na=False)].copy()
+
+        sub = df_rank[df_rank["codigo_indicador"] == var_rank].copy()
+        sub = sub[
+            (sub["fecha_dt"] >= pd.to_datetime(range_rank[0])) &
+            (sub["fecha_dt"] <= pd.to_datetime(range_rank[1]))
+        ]
+
+        if sub.empty:
+            st.info("No hay datos para ese rango/variable.")
+        else:
+            # Tratamiento de ceros según selector global
+            sub = treat_zeros_long(sub, "valor", ["codigo_entidad"], zero_mode)
+
+            # ---------- Top valores totales ----------
+            if fmt_rank == "P":
+                totals = sub.groupby("codigo_entidad", as_index=False)["valor"].mean().rename(columns={"valor": "metric"})
+                metric_label = "Promedio en período"
+                totals["metric_plot"] = totals["metric"] / 100.0
+                x_axis_tot = alt.Axis(title=metric_label, format=".1%")
+                text_fmt_tot = ".1%"
+            else:
+                totals = sub.groupby("codigo_entidad", as_index=False)["valor"].sum().rename(columns={"valor": "metric"})
+                metric_label = "Suma en período"
+                totals["metric_plot"] = totals["metric"]
+                x_axis_tot = alt.Axis(title=metric_label, format=",.2f")
+                text_fmt_tot = ",.2f"
+
+            totals["Entidad"] = totals["codigo_entidad"].map(lambda c: ent_map.get(c, c))
+            top_tot = totals.sort_values("metric_plot", ascending=False).head(int(topn))
+
+            st.markdown("### 🏆 Top valores totales")
+            if top_tot.empty:
+                st.info("No hay datos suficientes para calcular totales.")
+            else:
+                chart_tot = (
+                    alt.Chart(top_tot)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("metric_plot:Q", axis=x_axis_tot),
+                        y=alt.Y("Entidad:N", sort="-x", title=None),
+                        tooltip=[
+                            alt.Tooltip("Entidad:N"),
+                            alt.Tooltip("metric:Q", title=metric_label, format=text_fmt_tot),
+                        ],
+                    )
+                    .properties(height=28 * len(top_tot) + 20)
+                )
+                text_tot = chart_tot.mark_text(align="left", dx=3).encode(text=alt.Text("metric_plot:Q", format=text_fmt_tot))
+                st.altair_chart(chart_tot + text_tot, use_container_width=True)
+
+            # ---------- Top variación % (último vs primero del rango) ----------
+            s = sub.sort_values(["codigo_entidad", "fecha_dt"])
+            first = s.groupby("codigo_entidad", as_index=False).first()[["codigo_entidad", "valor"]].rename(columns={"valor": "first"})
+            last = s.groupby("codigo_entidad", as_index=False).last()[["codigo_entidad", "valor"]].rename(columns={"valor": "last"})
+            ch = pd.merge(first, last, on="codigo_entidad", how="inner")
+            # filtrar entidades sin base válida
+            ch = ch[(~ch["first"].isna()) & (~ch["last"].isna()) & (ch["first"] != 0)]
+            ch["delta"] = ch["last"] / ch["first"] - 1.0
+            ch["Entidad"] = ch["codigo_entidad"].map(lambda c: ent_map.get(c, c))
+
+            col_up, col_dn = st.columns(2)
+            with col_up:
+                st.markdown("### 📈 Mayores subas (% cambio)")
+                top_up = ch.sort_values("delta", ascending=False).head(int(topn))
+                if top_up.empty:
+                    st.info("No hay suficientes datos para calcular subas.")
+                else:
+                    chart_up = (
+                        alt.Chart(top_up)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("delta:Q", axis=alt.Axis(title="% cambio", format=".1%")),
+                            y=alt.Y("Entidad:N", sort="-x", title=None),
+                            tooltip=[
+                                alt.Tooltip("Entidad:N"),
+                                alt.Tooltip("delta:Q", title="% cambio", format=".1%"),
+                            ],
+                        )
+                        .properties(height=28 * len(top_up) + 20)
+                    )
+                    text_up = chart_up.mark_text(align="left", dx=3).encode(text=alt.Text("delta:Q", format=".1%"))
+                    st.altair_chart(chart_up + text_up, use_container_width=True)
+
+            with col_dn:
+                st.markdown("### 📉 Mayores bajas (% cambio)")
+                top_dn = ch.sort_values("delta", ascending=True).head(int(topn))
+                if top_dn.empty:
+                    st.info("No hay suficientes datos para calcular bajas.")
+                else:
+                    chart_dn = (
+                        alt.Chart(top_dn)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("delta:Q", axis=alt.Axis(title="% cambio", format=".1%")),
+                            y=alt.Y("Entidad:N", sort=None, title=None),
+                            tooltip=[
+                                alt.Tooltip("Entidad:N"),
+                                alt.Tooltip("delta:Q", title="% cambio", format=".1%"),
+                            ],
+                        )
+                        .properties(height=28 * len(top_dn) + 20)
+                    )
+                    text_dn = chart_dn.mark_text(align="left", dx=3).encode(text=alt.Text("delta:Q", format=".1%"))
+                    st.altair_chart(chart_dn + text_dn, use_container_width=True)
 
 # Footer
 st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). UI oculta códigos; trabaja con descripciones. v6")
