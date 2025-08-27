@@ -351,50 +351,51 @@ with tab_serie:
                 if long_list:
                     plot_frames.append(pd.concat(long_list, ignore_index=True))
 
-            if plot_frames:
-    final_plot = pd.concat(plot_frames, ignore_index=True)
+                        if plot_frames:
+                final_plot = pd.concat(plot_frames, ignore_index=True)
 
-    # Elegí el timeUnit según el rango para un eje x estable y ≤ 10 etiquetas
-    if span_months > 60:
-        time_unit = "year"       # solo años
-        fmt = "%Y"
-        ticks = min(10, end_dt.year - start_dt.year + 1)
-    elif span_months > 12:
-        time_unit = "yearmonth"  # semestral aprox. (limitamos tickCount)
-        fmt = "%m-%y"
-        ticks = min(10, math.ceil(span_months/6))
-    else:
-        time_unit = "yearmonth"  # mensual
-        fmt = "%m-%y"
-        ticks = min(10, span_months)
+                # Elegí el timeUnit según el rango para un eje x estable y ≤ 10 etiquetas
+                if span_months > 60:
+                    time_unit = "year"       # solo años
+                    xfmt = "%Y"
+                    ticks = min(10, end_dt.year - start_dt.year + 1)
+                elif span_months > 12:
+                    time_unit = "yearmonth"  # semestral aprox.
+                    xfmt = "%m-%y"
+                    ticks = min(10, math.ceil(span_months/6))
+                else:
+                    time_unit = "yearmonth"  # mensual
+                    xfmt = "%m-%y"
+                    ticks = min(10, span_months)
 
-    base = (
-        alt.Chart(final_plot)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X(
-                f"{time_unit}(fecha_dt):T",
-                title="Mes",
-                axis=alt.Axis(format=fmt, tickCount=ticks, labelOverlap=True)
-            ),
-            y=alt.Y("ValorPlot:Q", title="Valor"),
-            color=alt.Color("Entidad:N", title="Serie", legend=alt.Legend(orient="bottom"))
-        )
-    )
+                base = (
+                    alt.Chart(final_plot)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X(
+                            f"{time_unit}(fecha_dt):T",
+                            title="Mes",
+                            axis=alt.Axis(format=xfmt, tickCount=ticks, labelOverlap=True)
+                        ),
+                        y=alt.Y("ValorPlot:Q", title="Valor"),
+                        color=alt.Color("Entidad:N", title="Serie", legend=alt.Legend(orient="bottom"))
+                    )
+                )
 
-    # Facet en filas, con escalas Y independientes (evita 'aplastados')
-    chart = base.facet(
-        facet=alt.Facet("Variable:N", title=None),
-        columns=1
-    ).resolve_scale(
-        y="independent"
-    ).properties(
-        height=240
-    )
+                # Facetas por Variable con escalas Y independientes
+                chart = base.facet(
+                    facet=alt.Facet("Variable:N", title=None),
+                    columns=1
+                ).resolve_scale(
+                    y="independent"
+                ).properties(
+                    height=240
+                )
 
-    st.altair_chart(chart, use_container_width=True)
-else:
-    st.info("No hay datos para graficar en el rango seleccionado.")
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("No hay datos para graficar en el rango seleccionado.")
+
 
 
 # ===================== CALCULADORA =====================
@@ -477,24 +478,24 @@ with tab_calc:
                 pivot["Resultado"] = pivot.apply(apply_expr, axis=1)
                 pivot["Entidad"] = pivot["codigo_entidad"].map(lambda c: ent_map.get(c, c))
 # Eje X con timeUnit + hasta 10 ticks
-span_m = (pd.to_datetime(range_calc[1]).year - pd.to_datetime(range_calc[0]).year)*12 + \
-         (pd.to_datetime(range_calc[1]).month - pd.to_datetime(range_calc[0]).month) + 1
-if span_m > 60:
-    tu, fmt, ticks = "year", "%Y", min(10, pd.to_datetime(range_calc[1]).year - pd.to_datetime(range_calc[0]).year + 1)
-else:
-    tu, fmt, ticks = "yearmonth", "%m-%y", min(10, span_m)
+        span_m = (pd.to_datetime(range_calc[1]).year - pd.to_datetime(range_calc[0]).year)*12 + \
+             (pd.to_datetime(range_calc[1]).month - pd.to_datetime(range_calc[0]).month) + 1
+        if span_m > 60:
+            tu, fmt, ticks = "year", "%Y", min(10, pd.to_datetime(range_calc[1]).year - pd.to_datetime(range_calc[0]).year + 1)
+        else:
+            tu, fmt, ticks = "yearmonth", "%m-%y", min(10, span_m)
 
-chart = (
-    alt.Chart(pivot.dropna(subset=["Resultado"]))
-    .mark_line(point=True)
-    .encode(
-        x=alt.X(f"{tu}(fecha_dt):T", title="Mes", axis=alt.Axis(format=fmt, tickCount=ticks)),
-        y=alt.Y("Resultado:Q", title="Resultado"),
-        color=alt.Color("Entidad:N", title="Entidad", legend=alt.Legend(orient="bottom"))
-    )
-    .properties(height=420)
-)
-st.altair_chart(chart, use_container_width=True)
+        chart = (
+            alt.Chart(pivot.dropna(subset=["Resultado"]))
+            .mark_line(point=True)
+            .encode(
+            x=alt.X(f"{tu}(fecha_dt):T", title="Mes", axis=alt.Axis(format=fmt, tickCount=ticks)),
+            y=alt.Y("Resultado:Q", title="Resultado"),
+            color=alt.Color("Entidad:N", title="Entidad", legend=alt.Legend(orient="bottom"))
+                    )
+            .properties(height=420)
+                )
+        st.altair_chart(chart, use_container_width=True)
 
 # ===================== PORCENTAJE DEL TOTAL =====================
 with tab_share:
@@ -542,21 +543,21 @@ with tab_share:
             merged["share"] = np.where(merged["tot_val"]==0, np.nan, merged["ent_val"]/merged["tot_val"])
             merged["Entidad"] = ent_map.get(ent_share, ent_share)
            # Eje X con timeUnit + hasta 10 ticks
-span_m = (pd.to_datetime(range_share[1]).year - pd.to_datetime(range_share[0]).year)*12 + \
-         (pd.to_datetime(range_share[1]).month - pd.to_datetime(range_share[0]).month) + 1
-if span_m > 60:
-    tu, fmt, ticks = "year", "%Y", min(10, pd.to_datetime(range_share[1]).year - pd.to_datetime(range_share[0]).year + 1)
-else:
-    tu, fmt, ticks = "yearmonth", "%m-%y", min(10, span_m)
+            span_m = (pd.to_datetime(range_share[1]).year - pd.to_datetime(range_share[0]).year)*12 + \
+            (pd.to_datetime(range_share[1]).month - pd.to_datetime(range_share[0]).month) + 1
+        if span_m > 60:
+            tu, fmt, ticks = "year", "%Y", min(10, pd.to_datetime(range_share[1]).year - pd.to_datetime(range_share[0]).year + 1)
+        else:
+            tu, fmt, ticks = "yearmonth", "%m-%y", min(10, span_m)
 
-chart = (
-    alt.Chart(merged)
-    .mark_line(point=True)
-    .encode(
-        x=alt.X(f"{tu}(fecha_dt):T", title="Mes", axis=alt.Axis(format=fmt, tickCount=ticks)),
-        y=alt.Y("share:Q", title="% del total", axis=alt.Axis(format=".1%")),
-        color=alt.Color("Entidad:N", legend=alt.Legend(orient="bottom"))
-    )
-    .properties(height=420)
-)
-st.altair_chart(chart, use_container_width=True)
+        chart = (
+            alt.Chart(merged)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X(f"{tu}(fecha_dt):T", title="Mes", axis=alt.Axis(format=fmt, tickCount=ticks)),
+                y=alt.Y("share:Q", title="% del total", axis=alt.Axis(format=".1%")),
+                color=alt.Color("Entidad:N", legend=alt.Legend(orient="bottom"))
+                )
+            .properties(height=420)
+            )
+            st.altair_chart(chart, use_container_width=True)
