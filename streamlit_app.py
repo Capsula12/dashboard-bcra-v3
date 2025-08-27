@@ -377,15 +377,13 @@ with tab_serie:
                         y=alt.Y("ValorPlot:Q", title="Valor"),
                         color=alt.Color("Entidad:N", title="Serie", legend=alt.Legend(orient="bottom"))
                     )
-                )
+                ).properties(height=240)
 
                 chart = base.facet(
                     facet=alt.Facet("Variable:N", title=None),
                     columns=1
                 ).resolve_scale(
                     y="independent"
-                ).properties(
-                    height=240
                 )
 
                 st.altair_chart(chart, use_container_width=True)
