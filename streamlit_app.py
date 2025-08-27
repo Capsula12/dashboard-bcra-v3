@@ -1,4 +1,4 @@
-# streamlit_app.py (v6)
+# streamlit_app.py (v7)
 # Requiere: streamlit pandas altair numpy
 # CSVs esperados en ./data:
 #   - bcra_consolidado.csv (o bcra_consolidado_part*.csv)
@@ -64,7 +64,7 @@ def load_consolidado() -> pd.DataFrame:
     df_all["fecha"] = df_all["fecha"].astype("string").str.strip()
     df_all["fecha_dt"] = pd.to_datetime(df_all["fecha"] + "-01", format="%Y-%m-%d", errors="coerce")
     df_all = df_all.dropna(subset=["fecha_dt"]).sort_values(
-        ["fecha_dt","codigo_entidad","codigo_indicador"]
+        ["fecha_dt", "codigo_entidad", "codigo_indicador"]
     ).reset_index(drop=True)
     return df_all
 
@@ -96,7 +96,7 @@ def load_agregados():
         return None
     df["fecha"] = df["fecha"].astype(str)
     df["fecha_dt"] = pd.to_datetime(df["fecha"].str.strip() + "-01", format="%Y-%m-%d", errors="coerce")
-    df = df.dropna(subset=["fecha_dt"]).sort_values(["fecha_dt","codigo_indicador"]).reset_index(drop=True)
+    df = df.dropna(subset=["fecha_dt"]).sort_values(["fecha_dt", "codigo_indicador"]).reset_index(drop=True)
     if "formato" in df.columns:
         df["formato"] = df["formato"].astype("string").str.upper().fillna("N")
     return df
@@ -120,7 +120,7 @@ def format_value(val: float, fmt: str, decimals=2) -> str:
     return f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def to_plot_series(series_vals: pd.Series, fmt_code: str) -> pd.Series:
-    return series_vals/100.0 if str(fmt_code).upper()=="P" else series_vals
+    return series_vals / 100.0 if str(fmt_code).upper() == "P" else series_vals
 
 def find_variable_codes_by_hint(hints, top_k=4):
     codes = []
@@ -151,7 +151,7 @@ def tick_values_for_range(start_dt: pd.Timestamp, end_dt: pd.Timestamp):
     """Genera ticks (fechas) para el eje X sin agrupar datos; ≤10 etiquetas."""
     start = pd.Timestamp(start_dt.year, start_dt.month, 1)
     end = pd.Timestamp(end_dt.year, end_dt.month, 1)
-    span_months = (end.year - start.year)*12 + (end.month - start.month) + 1
+    span_months = (end.year - start.year) * 12 + (end.month - start.month) + 1
 
     if span_months > 60:
         ticks = pd.date_range(start, end, freq="YS")  # 1 enero de cada año
@@ -165,7 +165,7 @@ def tick_values_for_range(start_dt: pd.Timestamp, end_dt: pd.Timestamp):
         fmt = "%m-%y"
 
     if len(ticks) > 10:
-        idx = np.linspace(0, len(ticks)-1, 10).round().astype(int)
+        idx = np.linspace(0, len(ticks) - 1, 10).round().astype(int)
         ticks = [ticks[i] for i in idx]
     return ticks, fmt
 
@@ -194,7 +194,7 @@ def treat_zeros_long(df_long: pd.DataFrame, value_col: str, group_cols: list, mo
     return out
 
 # ---------- UI ----------
-st.title("📊 Indicadores del BCRA (v6)")
+st.title("📊 Indicadores del BCRA (v7)")
 
 # Control global de tratamiento de ceros
 zero_mode = st.selectbox(
@@ -208,13 +208,13 @@ if df.empty:
     st.warning("No se encontraron CSV en `./data`. Subí `bcra_consolidado.csv` (o partes), `bcra_nomina.csv` y `bcra_indicadores.csv`.")
     st.stop()
 
-# Tabs (sin “Porcentaje del total”)
+# Tabs (Panel, Serie, Calculadora, Rankings)
 tab_panel, tab_serie, tab_calc, tab_rank = st.tabs(["Panel", "Serie", "Calculadora", "Rankings"])
 
 # ===================== PANEL =====================
 with tab_panel:
     st.subheader("Panel")
-    colA, colB, colC = st.columns([1,1,1])
+    colA, colB, colC = st.columns([1, 1, 1])
     with colA:
         ent_codes_sorted = sorted(df["codigo_entidad"].dropna().unique().tolist(), key=lambda c: ent_map.get(c, c))
         default_ent_idx = ent_codes_sorted.index(DEFAULT_ENTITY_CODE) if DEFAULT_ENTITY_CODE in ent_codes_sorted else 0
@@ -237,7 +237,7 @@ with tab_panel:
         def_month = default_month_value()
         month = st.selectbox(
             "Mes", options=all_months,
-            index=(all_months.index(def_month) if def_month in all_months else len(all_months)-1),
+            index=(all_months.index(def_month) if def_month in all_months else len(all_months) - 1),
             format_func=lambda d: d.strftime("%Y-%m"),
             key="panel_month"
         )
@@ -276,7 +276,6 @@ with tab_panel:
             st.markdown(f"### {format_value(r['Actual'], r['Formato'])}")
             mm = percent_change(r["Actual"], r["Previo"])
             yy = percent_change(r["Actual"], r["YoY"])
-            # color en el delta
             sign_mm = "+" if (mm is not None and mm >= 0) else "−"
             color_mm = "#2e7d32" if (mm is not None and mm >= 0) else "#c62828"
             sign_yy = "+" if (yy is not None and yy >= 0) else "−"
@@ -289,9 +288,9 @@ with tab_panel:
             )
 
             # Mini-plot (últimos 18 meses) con leyenda abajo y tratamiento de ceros
-            series = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == r["Código"])][["fecha_dt","valor"]].copy()
+            series = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == r["Código"])][["fecha_dt", "valor"]].copy()
             series["serie"] = ent_map.get(ent_code, ent_code)
-            plot_frames = [series.rename(columns={"valor":"value"})]
+            plot_frames = [series.rename(columns={"valor": "value"})]
             if agg_df is not None:
                 ag = agg_df[agg_df["codigo_indicador"] == r["Código"]].copy()
                 cmps = {
@@ -304,10 +303,10 @@ with tab_panel:
                 }
                 for label, colname in cmps.items():
                     if colname in ag.columns:
-                        tmp = ag[["fecha_dt", colname]].rename(columns={colname:"value"})
+                        tmp = ag[["fecha_dt", colname]].rename(columns={colname: "value"})
                         tmp["serie"] = label
-                        plot_frames.append(tmp[["fecha_dt","value","serie"]])
-            plot_df = pd.concat(plot_frames, ignore_index=True) if len(plot_frames)>1 else plot_frames[0]
+                        plot_frames.append(tmp[["fecha_dt", "value", "serie"]])
+            plot_df = pd.concat(plot_frames, ignore_index=True) if len(plot_frames) > 1 else plot_frames[0]
 
             # tratar ceros por serie
             plot_df = treat_zeros_long(plot_df, "value", ["serie"], zero_mode)
@@ -317,15 +316,18 @@ with tab_panel:
             cutoff = month - pd.DateOffset(months=18)
             plot_df = plot_df[plot_df["fecha_dt"] >= cutoff]
 
-            legend = alt.Legend(orient="bottom", direction="horizontal", title=None, labelLimit=160)
-            tvals, tfmt = tick_values_for_range(plot_df["fecha_dt"].min(), plot_df["fecha_dt"].max())
-            axis_y = alt.Axis(format=(".1%" if r["Formato"]=="P" else None))
-            base = alt.Chart(plot_df).mark_line().encode(
-                x=alt.X("fecha_dt:T", title="", axis=alt.Axis(values=tvals, format=tfmt, tickCount=len(tvals))),
-                y=alt.Y("value_plot:Q", title="", axis=axis_y),
-                color=alt.Color("serie:N", legend=legend, scale=alt.Scale(scheme="tableau10"))
-            ).properties(height=140)
-            st.altair_chart(base, use_container_width=True)
+            if not plot_df.empty:
+                legend = alt.Legend(orient="bottom", direction="horizontal", title=None, labelLimit=160)
+                tvals, tfmt = tick_values_for_range(plot_df["fecha_dt"].min(), plot_df["fecha_dt"].max())
+                axis_y = alt.Axis(format=(".1%" if r["Formato"] == "P" else None))
+                base = alt.Chart(plot_df).mark_line().encode(
+                    x=alt.X("fecha_dt:T", title="", axis=alt.Axis(values=tvals, format=tfmt, tickCount=len(tvals))),
+                    y=alt.Y("value_plot:Q", title="", axis=axis_y),
+                    color=alt.Color("serie:N", legend=legend, scale=alt.Scale(scheme="tableau10"))
+                ).properties(height=140)
+                st.altair_chart(base, use_container_width=True)
+            else:
+                st.caption("Sin datos recientes para esta variable.")
 
     if agg_df is None:
         st.info("Para comparadores (Sistema, Pública/Privada, etc.), agregá `data/bcra_agregados.csv`.")
@@ -333,7 +335,7 @@ with tab_panel:
 # ===================== SERIE =====================
 with tab_serie:
     st.subheader("Serie")
-    c1, c2 = st.columns([1,2])
+    c1, c2 = st.columns([1, 2])
     with c1:
         ents = st.multiselect(
             "Entidades",
@@ -354,7 +356,7 @@ with tab_serie:
         # Selector de rango temporal
         min_dt = df["fecha_dt"].min().date()
         max_dt = df["fecha_dt"].max().date()
-        default_start = date(max_dt.year-5, max_dt.month, 1) if (max_dt.year - min_dt.year) >= 5 else min_dt
+        default_start = date(max_dt.year - 5, max_dt.month, 1) if (max_dt.year - min_dt.year) >= 5 else min_dt
         date_range = st.slider(
             "Rango temporal",
             min_value=min_dt,
@@ -372,8 +374,8 @@ with tab_serie:
 
             plot_frames = []
             for e in ents:
-                sub = df[(df["codigo_entidad"]==e) & (df["codigo_indicador"].isin(vars_series))].copy()
-                sub = sub[(sub["fecha_dt"]>=start_dt) & (sub["fecha_dt"]<=end_dt)]
+                sub = df[(df["codigo_entidad"] == e) & (df["codigo_indicador"].isin(vars_series))].copy()
+                sub = sub[(sub["fecha_dt"] >= start_dt) & (sub["fecha_dt"] <= end_dt)]
                 if sub.empty:
                     continue
                 sub["Entidad"] = ent_map.get(e, e)
@@ -382,34 +384,34 @@ with tab_serie:
                 sub["Formato"] = sub["Formato"].astype("string").str.upper().fillna("N")
 
                 # tratar ceros por serie (Entidad, Variable)
-                sub = treat_zeros_long(sub, "valor", ["Entidad","Variable"], zero_mode)
+                sub = treat_zeros_long(sub, "valor", ["Entidad", "Variable"], zero_mode)
 
-                sub["ValorPlot"] = np.where(sub["Formato"]=="P", sub["valor"]/100.0, sub["valor"])
+                sub["ValorPlot"] = np.where(sub["Formato"] == "P", sub["valor"] / 100.0, sub["valor"])
                 plot_frames.append(sub)
 
             if show_agg and agg_df is not None:
                 ag = agg_df[agg_df["codigo_indicador"].isin(vars_series)].copy()
-                ag = ag[(ag["fecha_dt"]>=start_dt) & (ag["fecha_dt"]<=end_dt)]
+                ag = ag[(ag["fecha_dt"] >= start_dt) & (ag["fecha_dt"] <= end_dt)]
                 long_list = []
                 for name, col in {
-                    "Sistema financiero":"sistema_financiero",
-                    "Banca pública":"banca_publica",
-                    "Banca privada":"banca_privada",
-                    "Capital nacional":"banca_nacional",
-                    "Capital extranjero":"banca_extranjera",
-                    "Compañías financieras":"companias_financieras",
+                    "Sistema financiero": "sistema_financiero",
+                    "Banca pública": "banca_publica",
+                    "Banca privada": "banca_privada",
+                    "Capital nacional": "banca_nacional",
+                    "Capital extranjero": "banca_extranjera",
+                    "Compañías financieras": "companias_financieras",
                 }.items():
                     if col in ag.columns:
-                        t = ag[["fecha_dt","codigo_indicador","indicador","formato",col]].rename(columns={col:"valor"})
+                        t = ag[["fecha_dt", "codigo_indicador", "indicador", "formato", col]].rename(columns={col: "valor"})
                         t["Entidad"] = name
                         t["Variable"] = t["codigo_indicador"].map(lambda c: var_map.get(c, c))
                         t["Formato"] = t["codigo_indicador"].map(lambda c: fmt_map.get(c, "N"))
                         t["Formato"] = t["Formato"].astype("string").str.upper().fillna("N")
 
                         # tratar ceros por serie agregada (Entidad, Variable)
-                        t = treat_zeros_long(t, "valor", ["Entidad","Variable"], zero_mode)
+                        t = treat_zeros_long(t, "valor", ["Entidad", "Variable"], zero_mode)
 
-                        t["ValorPlot"] = np.where(t["Formato"]=="P", t["valor"]/100.0, t["valor"])
+                        t["ValorPlot"] = np.where(t["Formato"] == "P", t["valor"] / 100.0, t["valor"])
                         long_list.append(t)
                 if long_list:
                     plot_frames.append(pd.concat(long_list, ignore_index=True))
@@ -444,7 +446,7 @@ with tab_serie:
 # ===================== CALCULADORA =====================
 with tab_calc:
     st.subheader("Calculadora de variables")
-    c1, c2 = st.columns([1,2])
+    c1, c2 = st.columns([1, 2])
     with c1:
         ents2 = st.multiselect(
             "Entidades",
@@ -458,18 +460,18 @@ with tab_calc:
         ops = ["+", "-", "*", "/"]
         term_vars = []
         term_ops = []
-        for i in range(1,6):
+        for i in range(1, 6):
             v = st.selectbox(
                 f"Variable {i}",
                 options=["—"] + sorted(df["codigo_indicador"].unique().tolist(), key=lambda x: var_map.get(x, x)),
                 index=0,
-                format_func=lambda x: var_map.get(x, x) if x!="—" else "—",
+                format_func=lambda x: var_map.get(x, x) if x != "—" else "—",
                 key=f"calc_var_{i}"
             )
-            term_vars.append(None if v=="—" else v)
+            term_vars.append(None if v == "—" else v)
             if i < 5:
-                op = st.selectbox(f"Operación {i}→{i+1}", options=["—"]+ops, index=0, key=f"calc_op_{i}")
-                term_ops.append(None if op=="—" else op)
+                op = st.selectbox(f"Operación {i}→{i+1}", options=["—"] + ops, index=0, key=f"calc_op_{i}")
+                term_ops.append(None if op == "—" else op)
 
         # Rango de fechas
         min_dt = df["fecha_dt"].min().date()
@@ -487,14 +489,14 @@ with tab_calc:
         else:
             vars_sel = [v for v in term_vars if v]
             sub = df[df["codigo_indicador"].isin(vars_sel)].copy()
-            sub = sub[(sub["fecha_dt"]>=pd.to_datetime(range_calc[0])) & (sub["fecha_dt"]<=pd.to_datetime(range_calc[1]))]
+            sub = sub[(sub["fecha_dt"] >= pd.to_datetime(range_calc[0])) & (sub["fecha_dt"] <= pd.to_datetime(range_calc[1]))]
             if sub.empty:
                 st.info("No hay datos en ese rango.")
             else:
                 # pivot ancho por entidad-fecha
-                pivot = sub.pivot_table(index=["codigo_entidad","fecha_dt"], columns="codigo_indicador", values="valor", aggfunc="last").reset_index()
+                pivot = sub.pivot_table(index=["codigo_entidad", "fecha_dt"], columns="codigo_indicador", values="valor", aggfunc="last").reset_index()
                 pivot = pivot[pivot["codigo_entidad"].isin(ents2)].copy()
-                pivot = pivot.sort_values(["codigo_entidad","fecha_dt"])
+                pivot = pivot.sort_values(["codigo_entidad", "fecha_dt"])
 
                 # tratamiento de ceros en inputs
                 if zero_mode.startswith("Ignorar"):
@@ -550,8 +552,7 @@ with tab_calc:
                 st.altair_chart(chart, use_container_width=True)
 
                 with st.expander("Ver datos"):
-                    st.dataframe(pivot[["Entidad","fecha_dt","Resultado"]].sort_values(["Entidad","fecha_dt"]), use_container_width=True)
-
+                    st.dataframe(pivot[["Entidad", "fecha_dt", "Resultado"]].sort_values(["Entidad", "fecha_dt"]), use_container_width=True)
 
 # ===================== RANKINGS =====================
 with tab_rank:
@@ -582,11 +583,10 @@ with tab_rank:
         topn = st.number_input("Top N", min_value=3, max_value=50, value=10, step=1, key="rank_topn")
 
         fmt_rank = str(fmt_map.get(var_rank, "N")).upper()
-        if fmt_rank == "P":
-            st.caption("📌 En “Top valores totales” se usa **promedio** del período, omitiendo 0.00.")
+        st.caption("📌 En “Top valores totales” se usa **promedio** del período, omitiendo 0.00.")
 
     with c2:
-        # Filtrar: excluir entidades agrupadas (codigos que empiezan con 'AA')
+        # Filtrar: excluir entidades agrupadas (códigos que empiezan con 'AA')
         df_rank = df[~df["codigo_entidad"].str.startswith("AA", na=False)].copy()
 
         sub = df_rank[df_rank["codigo_indicador"] == var_rank].copy()
@@ -598,62 +598,61 @@ with tab_rank:
         if sub.empty:
             st.info("No hay datos para ese rango/variable.")
         else:
-            # Tratamiento de ceros según selector global
+            # Tratamiento de ceros según selector global (para variaciones)
             sub = treat_zeros_long(sub, "valor", ["codigo_entidad"], zero_mode)
 
-# ---------- Top valores totales ----------
-# Siempre promedio del período, omitiendo 0.00 (independiente del formato)
-sub_nz = sub[sub["valor"] != 0].copy()
-if sub_nz.empty:
-    st.info("No hay datos (no nulos) para calcular promedios en este rango.")
-else:
-    totals = (
-        sub_nz.groupby("codigo_entidad", as_index=False)["valor"]
-        .mean()
-        .rename(columns={"valor": "metric"})
-    )
-    metric_label = "Promedio en período (sin 0.00)"
-    totals["Entidad"] = totals["codigo_entidad"].map(lambda c: ent_map.get(c, c))
+            # ---------- Top valores totales (promedio sin 0.00) ----------
+            sub_nz = sub[sub["valor"] != 0].copy()
+            if sub_nz.empty:
+                st.info("No hay datos (no nulos) para calcular promedios en este rango.")
+            else:
+                totals = (
+                    sub_nz.groupby("codigo_entidad", as_index=False)["valor"]
+                    .mean()
+                    .rename(columns={"valor": "metric"})
+                )
+                metric_label = "Promedio en período (sin 0.00)"
+                totals["Entidad"] = totals["codigo_entidad"].map(lambda c: ent_map.get(c, c))
 
-    if fmt_rank == "P":
-        totals["metric_plot"] = totals["metric"] / 100.0
-        x_axis_tot = alt.Axis(title=metric_label, format=".1%")
-        text_fmt_tot = ".1%"
-    else:
-        totals["metric_plot"] = totals["metric"]
-        x_axis_tot = alt.Axis(title=metric_label, format=",.2f")
-        text_fmt_tot = ",.2f"
+                if fmt_rank == "P":
+                    totals["metric_plot"] = totals["metric"] / 100.0
+                    x_axis_tot = alt.Axis(title=metric_label, format=".1%")
+                    text_fmt_tot = ".1%"
+                else:
+                    totals["metric_plot"] = totals["metric"]
+                    x_axis_tot = alt.Axis(title=metric_label, format=",.2f")
+                    text_fmt_tot = ",.2f"
 
-    top_tot = totals.sort_values("metric_plot", ascending=False).head(int(topn))
+                top_tot = totals.sort_values("metric_plot", ascending=False).head(int(topn))
 
-    st.markdown("### 🏆 Top valores totales (promedio)")
-    if top_tot.empty:
-        st.info("No hay datos suficientes para calcular promedios.")
-    else:
-        chart_tot = (
-            alt.Chart(top_tot)
-            .mark_bar()
-            .encode(
-                x=alt.X("metric_plot:Q", axis=x_axis_tot),
-                y=alt.Y("Entidad:N", sort="-x", title=None),
-                tooltip=[
-                    alt.Tooltip("Entidad:N"),
-                    alt.Tooltip("metric:Q", title=metric_label, format=text_fmt_tot),
-                ],
-            )
-            .properties(height=28 * len(top_tot) + 20)
-        )
-        text_tot = chart_tot.mark_text(align="left", dx=3).encode(
-            text=alt.Text("metric_plot:Q", format=text_fmt_tot)
-        )
-        st.altair_chart(chart_tot + text_tot, use_container_width=True)
+                st.markdown("### 🏆 Top valores totales (promedio)")
+                if top_tot.empty:
+                    st.info("No hay datos suficientes para calcular promedios.")
+                else:
+                    chart_tot = (
+                        alt.Chart(top_tot)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("metric_plot:Q", axis=x_axis_tot),
+                            y=alt.Y("Entidad:N", sort="-x", title=None),
+                            tooltip=[
+                                alt.Tooltip("Entidad:N"),
+                                alt.Tooltip("metric:Q", title=metric_label, format=text_fmt_tot),
+                            ],
+                        )
+                        .properties(height=28 * len(top_tot) + 20)
+                    )
+                    text_tot = chart_tot.mark_text(align="left", dx=3).encode(
+                        text=alt.Text("metric_plot:Q", format=text_fmt_tot)
+                    )
+                    st.altair_chart(chart_tot + text_tot, use_container_width=True)
 
             # ---------- Top variación % (último vs primero del rango) ----------
             s = sub.sort_values(["codigo_entidad", "fecha_dt"])
             first = s.groupby("codigo_entidad", as_index=False).first()[["codigo_entidad", "valor"]].rename(columns={"valor": "first"})
             last = s.groupby("codigo_entidad", as_index=False).last()[["codigo_entidad", "valor"]].rename(columns={"valor": "last"})
             ch = pd.merge(first, last, on="codigo_entidad", how="inner")
-            # filtrar entidades sin base válida
+            # filtrar entidades sin base válida (first distinto de 0 y no NaN)
             ch = ch[(~ch["first"].isna()) & (~ch["last"].isna()) & (ch["first"] != 0)]
             ch["delta"] = ch["last"] / ch["first"] - 1.0
             ch["Entidad"] = ch["codigo_entidad"].map(lambda c: ent_map.get(c, c))
@@ -704,4 +703,4 @@ else:
                     st.altair_chart(chart_dn + text_dn, use_container_width=True)
 
 # Footer
-st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). UI oculta códigos; trabaja con descripciones. v6")
+st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). UI oculta códigos; trabaja con descripciones. v7")
