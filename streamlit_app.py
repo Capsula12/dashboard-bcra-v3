@@ -1,18 +1,12 @@
-# streamlit_app.py
+# streamlit_app.py (v2)
 # Requiere: streamlit pandas altair numpy
-# Estructura esperada en el repo:
-#   /data/bcra_consolidado.csv  (o varias partes: bcra_consolidado_part*.csv)
-#   /data/bcra_nomina.csv
-#   /data/bcra_indicadores.csv
-#   (opcional) /data/bcra_agregados.csv  -> columnas: 
-#     fecha (YYYY-MM), codigo_indicador, indicador, formato,
-#     sistema_financiero, banca_publica, banca_privada, banca_nacional, banca_extranjera, companias_financieras
-#
-# Pestañas:
-#  - Panel
-#  - Serie
-#  - Calculadora
-#  - Porcentaje del total
+# Espera CSVs en ./data:
+#   - bcra_consolidado.csv (o bcra_consolidado_part*.csv)
+#   - bcra_nomina.csv
+#   - bcra_indicadores.csv
+#   - (opcional) bcra_agregados.csv con columnas: 
+#       fecha (YYYY-MM), codigo_indicador, indicador, formato,
+#       sistema_financiero, banca_publica, banca_privada, banca_nacional, banca_extranjera, companias_financieras
 
 import streamlit as st
 import pandas as pd
@@ -20,12 +14,12 @@ import numpy as np
 import altair as alt
 from pathlib import Path
 import glob
-from functools import lru_cache
+import math
+from datetime import date
 
 st.set_page_config(page_title="Indicadores BCRA", layout="wide")
 
 DATA_DIR = Path("./data")
-
 MASTER = DATA_DIR / "bcra_consolidado.csv"
 PARTS = sorted([Path(p) for p in glob.glob(str(DATA_DIR / "bcra_consolidado_part*.csv"))])
 NOMINA = DATA_DIR / "bcra_nomina.csv"
@@ -39,11 +33,9 @@ DEFAULT_VAR_HINTS = ["Dotación de personal", "ROE", "ROA", "Gastos en personal"
 def _read_csv_safe(path, **kwargs):
     if not Path(path).is_file():
         return None
-    # utf-8-sig para BOM si lo hay
     try:
         return pd.read_csv(path, encoding="utf-8-sig", **kwargs)
     except Exception:
-        # Fallback
         return pd.read_csv(path, **kwargs)
 
 @st.cache_data(show_spinner=False)
@@ -63,13 +55,11 @@ def load_consolidado() -> pd.DataFrame:
     frames = []
     for f in files:
         df = _read_csv_safe(f, dtype=dtypes)
-        if df is None:
-            continue
-        frames.append(df)
+        if df is not None:
+            frames.append(df)
     if not frames:
         return pd.DataFrame(columns=dtypes.keys()).astype(dtypes)
     df_all = pd.concat(frames, ignore_index=True)
-    # fecha_dt: primer día del mes
     df_all["fecha"] = df_all["fecha"].str.strip()
     df_all["fecha_dt"] = pd.to_datetime(df_all["fecha"] + "-01", format="%Y-%m-%d", errors="coerce")
     df_all = df_all.dropna(subset=["fecha_dt"]).sort_values(["fecha_dt","codigo_entidad","codigo_indicador"]).reset_index(drop=True)
@@ -96,14 +86,11 @@ def load_indices():
 
 @st.cache_data(show_spinner=False)
 def load_agregados():
-    # Opcional. Si existe, lo usamos como “segundo plano”/comparadores.
     if not AGREGADOS.is_file():
         return None
     df = _read_csv_safe(AGREGADOS)
     if df is None or df.empty:
         return None
-    # Esperamos columnas: fecha (YYYY-MM), codigo_indicador, indicador, formato, 
-    # sistema_financiero, banca_publica, banca_privada, banca_nacional, banca_extranjera, companias_financieras
     df["fecha"] = df["fecha"].astype(str)
     df["fecha_dt"] = pd.to_datetime(df["fecha"].str.strip() + "-01", format="%Y-%m-%d", errors="coerce")
     df = df.dropna(subset=["fecha_dt"]).sort_values(["fecha_dt","codigo_indicador"]).reset_index(drop=True)
@@ -118,20 +105,30 @@ agg_df = load_agregados()
 def entity_label_from_code(code: str) -> str:
     return ent_map.get(code, code)
 
-def format_value(val: float, fmt: str, decimals=2) -> str:
-    if pd.isna(val):
-        return "—"
-    if (fmt or "").upper() == "P":
-        return f"{val:.{decimals}f}%"
-    return f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
 def percent_change(curr, prev):
     if curr is None or prev in (None, 0) or pd.isna(curr) or pd.isna(prev) or prev == 0:
         return None
     return (curr / prev) - 1.0
 
+def format_value(val: float, fmt: str, decimals=2) -> str:
+    if pd.isna(val):
+        return "—"
+    if (fmt or "").upper() == "P":
+        return f"{val:.{decimals}f}%"
+    # formateo es-AR: separador miles punto, decimal coma
+    return f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def color_delta(delta):
+    if delta is None:
+        return '<span style="color:#888">—</span>'
+    sign = "+" if delta >= 0 else "-"
+    color = "#2e7d32" if delta >= 0 else "#c62828"
+    return f'<span style="color:{color}">{sign}{abs(delta)*100:.1f}%</span>'
+
+def to_plot_series(series_vals: pd.Series, fmt: str) -> pd.Series:
+    return series_vals/100.0 if (fmt or "").upper()=="P" else series_vals
+
 def find_variable_codes_by_hint(hints, top_k=4):
-    # Devuelve hasta top_k códigos de indicador según "contiene" case-insensitive en descripción
     codes = []
     if var_map:
         for hint in hints:
@@ -142,10 +139,8 @@ def find_variable_codes_by_hint(hints, top_k=4):
                     codes.append(m)
             if len(codes) >= top_k:
                 break
-    # Si no encontró suficiente, completa con variables más frecuentes
     if len(codes) < top_k and not df.empty:
-        freq = df["codigo_indicador"].value_counts().index.tolist()
-        for c in freq:
+        for c in df["codigo_indicador"].value_counts().index.tolist():
             if c not in codes:
                 codes.append(c)
             if len(codes) >= top_k:
@@ -153,133 +148,95 @@ def find_variable_codes_by_hint(hints, top_k=4):
     return codes[:top_k]
 
 def default_month_value():
-    # intenta usar DEFAULT_MONTH_STR si existe; si no, usa el max disponible
     candidate = pd.to_datetime(DEFAULT_MONTH_STR + "-01", format="%Y-%m-%d", errors="coerce")
-    if candidate and not df.empty and candidate in df["fecha_dt"].unique():
+    if candidate is not pd.NaT and not df.empty and candidate in df["fecha_dt"].unique():
         return candidate
     return df["fecha_dt"].max() if not df.empty else None
 
-def to_plot_series(series_vals: pd.Series, fmt: str) -> pd.Series:
-    # Para gráficos: si el formato es porcentaje, convertir de “12.3” a “0.123”
-    if (fmt or "").upper() == "P":
-        return series_vals / 100.0
-    return series_vals
-
-def render_delta(curr, prev, fmt):
-    rel = percent_change(curr, prev)
-    if rel is None:
-        return "—"
-    sign = "▲" if rel >= 0 else "▼"
-    return f"{sign} {abs(rel)*100:.1f}%"
-
-# ───────────────────────── UI ─────────────────────────
-st.title("📊 Indicadores del BCRA")
+st.title("📊 Indicadores del BCRA (v2)")
 
 if df.empty:
-    st.warning("No se encontraron CSV en `./data`. Subí `bcra_consolidado.csv` (o sus partes), `bcra_nomina.csv` y `bcra_indicadores.csv`.")
+    st.warning("No se encontraron CSV en `./data`. Subí `bcra_consolidado.csv` (o partes), `bcra_nomina.csv` y `bcra_indicadores.csv`.")
     st.stop()
 
 tab_panel, tab_serie, tab_calc, tab_share = st.tabs(["Panel", "Serie", "Calculadora", "Porcentaje del total"])
 
-# =============== PANEL =================
+# ===================== PANEL =====================
 with tab_panel:
     st.subheader("Panel")
-
-    # Selectores
     colA, colB, colC = st.columns([1,1,1])
     with colA:
-        # Entidad (mostrar descripciones, mantener códigos por debajo)
         ent_codes_sorted = sorted(df["codigo_entidad"].dropna().unique().tolist(), key=lambda c: ent_map.get(c, c))
-        default_ent_idx = 0
-        if DEFAULT_ENTITY_CODE in ent_codes_sorted:
-            default_ent_idx = ent_codes_sorted.index(DEFAULT_ENTITY_CODE)
+        default_ent_idx = ent_codes_sorted.index(DEFAULT_ENTITY_CODE) if DEFAULT_ENTITY_CODE in ent_codes_sorted else 0
         ent_code = st.selectbox(
-            "Entidad",
-            options=ent_codes_sorted,
-            index=default_ent_idx if ent_codes_sorted else 0,
-            format_func=lambda code: ent_map.get(code, code)
+            "Entidad", options=ent_codes_sorted, index=default_ent_idx,
+            format_func=lambda code: ent_map.get(code, code),
+            key="panel_ent"
         )
-
     with colB:
-        # Variables
         default_var_codes = find_variable_codes_by_hint(DEFAULT_VAR_HINTS, top_k=4)
         var_codes_sorted = sorted(df["codigo_indicador"].dropna().unique().tolist(), key=lambda v: var_map.get(v, v))
         var_sel = st.multiselect(
-            "Variables",
-            options=var_codes_sorted,
+            "Variables", options=var_codes_sorted,
             default=[c for c in default_var_codes if c in var_codes_sorted][:4],
-            format_func=lambda code: var_map.get(code, code)
+            format_func=lambda code: var_map.get(code, code),
+            key="panel_vars"
         )
-
     with colC:
-        # Mes
-        min_date = df["fecha_dt"].min()
-        max_date = df["fecha_dt"].max()
+        all_months = sorted(df["fecha_dt"].unique().tolist())
         def_month = default_month_value()
         month = st.selectbox(
-            "Mes",
-            options=sorted(df["fecha_dt"].unique().tolist()),
-            index=(sorted(df["fecha_dt"].unique().tolist()).index(def_month) if def_month is not None else 0),
-            format_func=lambda d: d.strftime("%Y-%m")
+            "Mes", options=all_months,
+            index=(all_months.index(def_month) if def_month in all_months else len(all_months)-1),
+            format_func=lambda d: d.strftime("%Y-%m"),
+            key="panel_month"
         )
 
-    # Datos seleccionados
     if not var_sel:
         st.info("Seleccioná al menos una variable.")
         st.stop()
 
-    # Panel de métricas
     rows = []
     for vcode in var_sel:
         vdesc = var_map.get(vcode, vcode)
         fmt = fmt_map.get(vcode, "N")
-
-        # Valor del mes seleccionado para la entidad
+        # actual
         row_now = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == vcode) & (df["fecha_dt"] == month)]
         val_now = row_now["valor"].iloc[0] if not row_now.empty else np.nan
-
-        # Mes anterior
-        prev_month = (month + pd.offsets.MonthEnd(0) - pd.offsets.MonthBegin(1)) - pd.offsets.MonthBegin(0)  # no la necesitamos, usamos shift directo
-        month_prev = (month - pd.offsets.MonthBegin(1))  # primer día del mes anterior
+        # m-1
+        month_prev = month - pd.offsets.MonthBegin(1)
         row_prev = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == vcode) & (df["fecha_dt"] == month_prev)]
         val_prev = row_prev["valor"].iloc[0] if not row_prev.empty else np.nan
-
-        # Mismo mes año anterior
-        month_yoy = (month - pd.DateOffset(years=1))
+        # yoy
+        month_yoy = month - pd.DateOffset(years=1)
         row_yoy = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == vcode) & (df["fecha_dt"] == month_yoy)]
         val_yoy = row_yoy["valor"].iloc[0] if not row_yoy.empty else np.nan
 
         rows.append({
-            "Variable": vdesc,
-            "Código": vcode,
-            "Formato": fmt,
-            "Actual": val_now,
-            "Previo": val_prev,
-            "YoY": val_yoy
+            "Variable": vdesc, "Código": vcode, "Formato": fmt,
+            "Actual": val_now, "Previo": val_prev, "YoY": val_yoy
         })
-
     panel_df = pd.DataFrame(rows)
 
-    # Métricas (valor + variaciones)
-    ncols = 2 if len(panel_df) == 1 else (2 if len(panel_df)==2 else 4)
-    cols = st.columns(ncols) if len(panel_df) >= ncols else st.columns(len(panel_df))
+    ncols = 2 if len(panel_df) <= 2 else 4
+    cols = st.columns(ncols)
     for i, (_, r) in enumerate(panel_df.iterrows()):
         with cols[i % ncols]:
             st.markdown(f"**{r['Variable']}**")
             st.markdown(f"### {format_value(r['Actual'], r['Formato'])}")
-            st.caption(
-                f"m/m-1: {render_delta(r['Actual'], r['Previo'], r['Formato'])} · "
-                f"a/a-1: {render_delta(r['Actual'], r['YoY'], r['Formato'])}"
+            mm = percent_change(r["Actual"], r["Previo"])
+            yy = percent_change(r["Actual"], r["YoY"])
+            st.markdown(
+                f'<span style="font-size:0.9rem;color:#666">M/M-1: {color_delta(mm)} · A/A-1: {color_delta(yy)}</span>',
+                unsafe_allow_html=True
             )
 
-            # Mini serie con comparadores (si hay agregados)
+            # Mini-plot con comparadores (últimos 18 meses)
             series = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == r["Código"])][["fecha_dt","valor"]].copy()
             series["serie"] = ent_map.get(ent_code, ent_code)
-
             plot_frames = [series.rename(columns={"valor":"value"})]
             if agg_df is not None:
                 ag = agg_df[agg_df["codigo_indicador"] == r["Código"]].copy()
-                # Crear largas
                 cmps = {
                     "Sistema financiero": "sistema_financiero",
                     "Banca pública": "banca_publica",
@@ -290,44 +247,25 @@ with tab_panel:
                 }
                 for label, colname in cmps.items():
                     if colname in ag.columns:
-                        tmp = ag[["fecha_dt", colname, "formato"]].rename(columns={colname:"value"})
+                        tmp = ag[["fecha_dt", colname]].rename(columns={colname:"value"})
                         tmp["serie"] = label
                         plot_frames.append(tmp[["fecha_dt","value","serie"]])
-
             plot_df = pd.concat(plot_frames, ignore_index=True) if len(plot_frames)>1 else plot_frames[0]
-            # Convertir a ratio si es porcentaje
-            fmt = r["Formato"]
-            plot_df["value_plot"] = to_plot_series(plot_df["value"], fmt)
-
-            # Graficamos últimos 18 meses
+            plot_df["value_plot"] = to_plot_series(plot_df["value"], r["Formato"])
             cutoff = month - pd.DateOffset(months=18)
             plot_df = plot_df[plot_df["fecha_dt"] >= cutoff]
-
+            axis = alt.Axis(format=(".1%" if r["Formato"].upper()=="P" else None))
             base = alt.Chart(plot_df).mark_line().encode(
                 x=alt.X("fecha_dt:T", title=""),
-                y=alt.Y("value_plot:Q", title=""),
-                color=alt.Color("serie:N", title="", scale=alt.Scale(scheme="tableau10")),
-                strokeDash=alt.StrokeDash("serie:N", legend=None)
-                    .scale(domain=[ent_map.get(ent_code, ent_code)], range=[[1,0]])  # la entidad sólida
+                y=alt.Y("value_plot:Q", title="", axis=axis),
+                color=alt.Color("serie:N", title="", scale=alt.Scale(scheme="tableau10"))
             ).properties(height=120)
-
-            # Punto resaltado del mes elegido
-            highlight = alt.Chart(plot_df[plot_df["fecha_dt"]==month]).mark_point(size=60).encode(
-                x="fecha_dt:T", y="value_plot:Q", color="serie:N"
-            )
-
-            # Eje formato
-            if fmt.upper()=="P":
-                y_axis = alt.Axis(format=".1%")
-            else:
-                y_axis = alt.Axis()
-
-            st.altair_chart(base.encode(y=alt.Y("value_plot:Q", axis=y_axis)) + highlight, use_container_width=True)
+            st.altair_chart(base, use_container_width=True)
 
     if agg_df is None:
-        st.info("Para ver comparadores (Sistema financiero, Banca pública/privada, etc.), agregá `data/bcra_agregados.csv`.")
+        st.info("Para comparadores (Sistema, Pública/Privada, etc.), agregá `data/bcra_agregados.csv`.")
 
-# =============== SERIE =================
+# ===================== SERIE =====================
 with tab_serie:
     st.subheader("Serie")
     c1, c2 = st.columns([1,2])
@@ -336,33 +274,59 @@ with tab_serie:
             "Entidades",
             options=sorted(df["codigo_entidad"].unique().tolist(), key=lambda c: ent_map.get(c, c)),
             default=[DEFAULT_ENTITY_CODE] if DEFAULT_ENTITY_CODE in df["codigo_entidad"].unique() else [],
-            format_func=lambda c: ent_map.get(c, c)
+            format_func=lambda c: ent_map.get(c, c),
+            key="serie_ents"
         )
         vars_series = st.multiselect(
             "Variables",
             options=sorted(df["codigo_indicador"].unique().tolist(), key=lambda v: var_map.get(v, v)),
             default=find_variable_codes_by_hint(DEFAULT_VAR_HINTS, top_k=2),
-            format_func=lambda v: var_map.get(v, v)
+            format_func=lambda v: var_map.get(v, v),
+            key="serie_vars"
         )
-        show_agg = st.checkbox("Mostrar comparadores (si hay agregados)", value=True)
+        show_agg = st.checkbox("Mostrar comparadores (si hay agregados)", value=True, key="serie_show_agg")
+
+        # Selector de rango temporal
+        min_dt = df["fecha_dt"].min().date()
+        max_dt = df["fecha_dt"].max().date()
+        default_start = date(max_dt.year-5, max_dt.month, 1) if (max_dt.year - min_dt.year) >= 5 else min_dt
+        date_range = st.slider(
+            "Rango temporal",
+            min_value=min_dt,
+            max_value=max_dt,
+            value=(default_start, max_dt),
+            key="serie_range"
+        )
 
     with c2:
         if not ents or not vars_series:
             st.info("Seleccioná al menos una entidad y una variable.")
         else:
-            # Armamos DF para graficar
+            start_dt = pd.to_datetime(date_range[0])
+            end_dt = pd.to_datetime(date_range[1])
+            span_months = (end_dt.year - start_dt.year)*12 + (end_dt.month - start_dt.month) + 1
+            if span_months > 60:
+                axis_fmt, tick_count = "%Y", min(10, end_dt.year - start_dt.year + 1)
+            elif span_months > 12:
+                axis_fmt, tick_count = "%m-%y", min(10, math.ceil(span_months/6))
+            else:
+                axis_fmt, tick_count = "%m-%y", min(10, span_months)
+
             plot_frames = []
             for e in ents:
                 sub = df[(df["codigo_entidad"]==e) & (df["codigo_indicador"].isin(vars_series))].copy()
+                sub = sub[(sub["fecha_dt"]>=start_dt) & (sub["fecha_dt"]<=end_dt)]
+                if sub.empty: 
+                    continue
                 sub["Entidad"] = ent_map.get(e, e)
                 sub["Variable"] = sub["codigo_indicador"].map(lambda c: var_map.get(c, c))
                 sub["Formato"] = sub["codigo_indicador"].map(lambda c: fmt_map.get(c, "N"))
-                # Para graficar: dividir % por 100
                 sub["ValorPlot"] = np.where(sub["Formato"].str.upper()=="P", sub["valor"]/100.0, sub["valor"])
                 plot_frames.append(sub)
 
             if show_agg and agg_df is not None:
                 ag = agg_df[agg_df["codigo_indicador"].isin(vars_series)].copy()
+                ag = ag[(ag["fecha_dt"]>=start_dt) & (ag["fecha_dt"]<=end_dt)]
                 long_list = []
                 for name, col in {
                     "Sistema financiero":"sistema_financiero",
@@ -384,39 +348,40 @@ with tab_serie:
 
             if plot_frames:
                 final_plot = pd.concat(plot_frames, ignore_index=True)
-                y_axis = alt.Axis(title="Valor")
+                x_enc = alt.X(
+                    "fecha_dt:T", title="Mes",
+                    axis=alt.Axis(format=axis_fmt, tickCount=tick_count, labelOverlap=True)
+                )
                 chart = (
                     alt.Chart(final_plot)
                     .mark_line(point=True)
                     .encode(
-                        x=alt.X("fecha_dt:T", title="Mes"),
-                        y=alt.Y("ValorPlot:Q", title="Valor", axis=y_axis),
-                        color=alt.Color("Entidad:N", title="Serie"),
-                        facet=alt.Facet("Variable:N", title=None, columns=1)
+                        x=x_enc,
+                        y=alt.Y("ValorPlot:Q", title="Valor"),
+                        color=alt.Color("Entidad:N", title="Serie")
                     )
-                    .properties(height=260)
+                    .facet(row=alt.Row("Variable:N", title=None))
+                    .properties(height=220)
                 )
-                # Ajuste de formato de eje por variable (si alguna es %)
-                # (Mantenemos una única escala por panel; si querés eje por faceta, se puede complicar con resolve_scale)
+                chart = chart.resolve_scale(y='independent')  # << escalas Y independientes por variable
                 st.altair_chart(chart, use_container_width=True)
             else:
-                st.info("No hay datos para graficar.")
+                st.info("No hay datos para graficar en el rango seleccionado.")
 
-# =============== CALCULADORA =================
+# ===================== CALCULADORA =====================
 with tab_calc:
     st.subheader("Calculadora de variables")
-
     c1, c2 = st.columns([1,2])
     with c1:
         ents2 = st.multiselect(
             "Entidades",
             options=sorted(df["codigo_entidad"].unique().tolist(), key=lambda c: ent_map.get(c, c)),
             default=[DEFAULT_ENTITY_CODE] if DEFAULT_ENTITY_CODE in df["codigo_entidad"].unique() else [],
-            format_func=lambda c: ent_map.get(c, c)
+            format_func=lambda c: ent_map.get(c, c),
+            key="calc_ents"
         )
-        st.caption("Construí una fórmula simple: Termo1 (op) Termo2 (op) Termo3 ...")
+        st.caption("Construí una fórmula: Termo1 (op) Termo2 (op) Termo3 ...")
 
-        # Constructor simple: hasta 5 términos
         ops = ["+", "-", "*", "/"]
         term_vars = []
         term_ops = []
@@ -425,137 +390,132 @@ with tab_calc:
                 f"Variable {i}",
                 options=["—"] + sorted(df["codigo_indicador"].unique().tolist(), key=lambda x: var_map.get(x, x)),
                 index=0,
-                format_func=lambda x: var_map.get(x, x) if x!="—" else "—"
+                format_func=lambda x: var_map.get(x, x) if x!="—" else "—",
+                key=f"calc_var_{i}"
             )
             term_vars.append(None if v=="—" else v)
             if i < 5:
-                op = st.selectbox(f"Operación {i}→{i+1}", options=["—"]+ops, index=0, key=f"op_{i}")
+                op = st.selectbox(f"Operación {i}→{i+1}", options=["—"]+ops, index=0, key=f"calc_op_{i}")
                 term_ops.append(None if op=="—" else op)
 
+        # Rango de fechas opcional
+        min_dt = df["fecha_dt"].min().date()
+        max_dt = df["fecha_dt"].max().date()
+        range_calc = st.slider(
+            "Rango temporal",
+            min_value=min_dt, max_value=max_dt, value=(min_dt, max_dt),
+            key="calc_range"
+        )
+
     with c2:
-        # Construir expresión
         active_terms = [tv for tv in term_vars if tv]
         if not ents2 or len(active_terms) < 1:
             st.info("Elegí al menos 1 variable y una entidad.")
         else:
-            # Generar DataFrame por entidad con columnas = variables seleccionadas
             vars_sel = [v for v in term_vars if v]
             sub = df[df["codigo_indicador"].isin(vars_sel)].copy()
-            # Armonizar por entidad/mes
-            sub = sub.pivot_table(index=["codigo_entidad","fecha_dt"], columns="codigo_indicador", values="valor", aggfunc="last").reset_index()
-
-            # Evaluar fórmula por filas (sin precedencia compleja; se aplica secuencialmente)
-            def apply_expr(row):
-                # arranca con primer término
-                nums = []
-                for v in term_vars:
-                    if v:
-                        nums.append(row.get(v, np.nan))
-                if not nums:
-                    return np.nan
-                res = nums[0]
-                idx_op = 0
-                for j in range(1, len(nums)):
-                    op = term_ops[idx_op] if idx_op < len(term_ops) else None
-                    val = nums[j]
-                    if pd.isna(res) or pd.isna(val) or op is None:
-                        idx_op += 1
-                        continue
-                    try:
-                        if op == "+":
-                            res = res + val
-                        elif op == "-":
-                            res = res - val
-                        elif op == "*":
-                            res = res * val
-                        elif op == "/":
-                            res = np.nan if val == 0 else res / val
-                    except Exception:
-                        res = np.nan
-                    idx_op += 1
-                return res
-
-            # Filtramos por entidades seleccionadas
-            sub = sub[sub["codigo_entidad"].isin(ents2)].copy()
+            sub = sub[(sub["fecha_dt"]>=pd.to_datetime(range_calc[0])) & (sub["fecha_dt"]<=pd.to_datetime(range_calc[1]))]
             if sub.empty:
-                st.info("No hay intersección de esas variables para las entidades seleccionadas.")
+                st.info("No hay datos en ese rango.")
             else:
-                sub["Resultado"] = sub.apply(apply_expr, axis=1)
-                sub["Entidad"] = sub["codigo_entidad"].map(lambda c: ent_map.get(c, c))
+                pivot = sub.pivot_table(index=["codigo_entidad","fecha_dt"], columns="codigo_indicador", values="valor", aggfunc="last").reset_index()
+                pivot = pivot[pivot["codigo_entidad"].isin(ents2)].copy()
 
+                def apply_expr(row):
+                    nums = []
+                    for v in term_vars:
+                        if v:
+                            nums.append(row.get(v, np.nan))
+                    if not nums:
+                        return np.nan
+                    res = nums[0]
+                    idx_op = 0
+                    for j in range(1, len(nums)):
+                        op = term_ops[idx_op] if idx_op < len(term_ops) else None
+                        val = nums[j]
+                        idx_op += 1
+                        if op is None or pd.isna(res) or pd.isna(val):
+                            continue
+                        try:
+                            if op == "+": res = res + val
+                            elif op == "-": res = res - val
+                            elif op == "*": res = res * val
+                            elif op == "/": res = np.nan if val == 0 else res / val
+                        except Exception:
+                            res = np.nan
+                    return res
+
+                pivot["Resultado"] = pivot.apply(apply_expr, axis=1)
+                pivot["Entidad"] = pivot["codigo_entidad"].map(lambda c: ent_map.get(c, c))
                 chart = (
-                    alt.Chart(sub.dropna(subset=["Resultado"]))
+                    alt.Chart(pivot.dropna(subset=["Resultado"]))
                     .mark_line(point=True)
                     .encode(
-                        x=alt.X("fecha_dt:T", title="Mes"),
+                        x=alt.X("fecha_dt:T", title="Mes", axis=alt.Axis(format="%m-%y", tickCount=10)),
                         y=alt.Y("Resultado:Q", title="Resultado"),
                         color=alt.Color("Entidad:N", title="Entidad")
                     )
                     .properties(height=420)
                 )
                 st.altair_chart(chart, use_container_width=True)
-
                 with st.expander("Ver datos"):
-                    st.dataframe(sub[["Entidad","fecha_dt","Resultado"]].sort_values(["Entidad","fecha_dt"]), use_container_width=True)
+                    st.dataframe(pivot[["Entidad","fecha_dt","Resultado"]].sort_values(["Entidad","fecha_dt"]), use_container_width=True)
 
-# =============== PORCENTAJE DEL TOTAL =================
+# ===================== PORCENTAJE DEL TOTAL =====================
 with tab_share:
     st.subheader("Participación sobre el total")
-
     c1, c2 = st.columns([1,2])
     with c1:
         ent_share = st.selectbox(
             "Entidad",
             options=sorted(df["codigo_entidad"].unique().tolist(), key=lambda c: ent_map.get(c, c)),
             index=(sorted(df["codigo_entidad"].unique().tolist()).index(DEFAULT_ENTITY_CODE) if DEFAULT_ENTITY_CODE in df["codigo_entidad"].unique() else 0),
-            format_func=lambda c: ent_map.get(c, c)
+            format_func=lambda c: ent_map.get(c, c),
+            key="share_ent"
         )
         var_share = st.selectbox(
             "Variable",
             options=sorted(df["codigo_indicador"].unique().tolist(), key=lambda v: var_map.get(v, v)),
             index=0,
-            format_func=lambda v: var_map.get(v, v)
+            format_func=lambda v: var_map.get(v, v),
+            key="share_var"
         )
-        st.caption("Nota: tiene sentido sobre **variables aditivas** (cantidades, montos). En porcentajes / ratios puede no ser interpretable.")
+        min_dt = df["fecha_dt"].min().date()
+        max_dt = df["fecha_dt"].max().date()
+        range_share = st.slider(
+            "Rango temporal",
+            min_value=min_dt, max_value=max_dt, value=(min_dt, max_dt),
+            key="share_range"
+        )
 
     with c2:
-        # Serie de la entidad
-        a = df[(df["codigo_entidad"]==ent_share) & (df["codigo_indicador"]==var_share)][["fecha_dt","valor"]].copy()
-        a = a.rename(columns={"valor":"ent_val"})
+        a = df[(df["codigo_entidad"]==ent_share) & (df["codigo_indicador"]==var_share)].copy()
+        a = a[(a["fecha_dt"]>=pd.to_datetime(range_share[0])) & (a["fecha_dt"]<=pd.to_datetime(range_share[1]))]
+        a = a[["fecha_dt","valor"]].rename(columns={"valor":"ent_val"})
 
-        # Serie total: si hay agregados, usamos "sistema_financiero"; si no, sumamos todas las entidades (aditivo)
-        if agg_df is not None and "sistema_financiero" in agg_df.columns:
+        if agg_df is not None and "sistema_financiero" in (agg_df.columns if hasattr(agg_df, "columns") else []):
             tot = agg_df[agg_df["codigo_indicador"]==var_share][["fecha_dt","sistema_financiero","formato"]].rename(columns={"sistema_financiero":"tot_val"})
         else:
-            # Total por mes = suma de entidades disponibles (advertencia en ratios)
             tot = df[df["codigo_indicador"]==var_share].groupby("fecha_dt", as_index=False)["valor"].sum().rename(columns={"valor":"tot_val"})
-            # formato:
-            fmt = fmt_map.get(var_share, "N")
-            tot["formato"] = fmt
+            tot["formato"] = fmt_map.get(var_share, "N")
 
+        tot = tot[(tot["fecha_dt"]>=pd.to_datetime(range_share[0])) & (tot["fecha_dt"]<=pd.to_datetime(range_share[1]))]
         merged = pd.merge(a, tot, on="fecha_dt", how="inner")
-        merged["share"] = np.where(merged["tot_val"]==0, np.nan, merged["ent_val"]/merged["tot_val"])
-        merged["Entidad"] = ent_map.get(ent_share, ent_share)
-        fmt = fmt_map.get(var_share, "N")
-
         if merged.empty:
-            st.info("No hay datos para calcular participación.")
+            st.info("No hay datos para calcular participación en ese rango.")
         else:
+            merged["share"] = np.where(merged["tot_val"]==0, np.nan, merged["ent_val"]/merged["tot_val"])
+            merged["Entidad"] = ent_map.get(ent_share, ent_share)
             chart = (
                 alt.Chart(merged)
                 .mark_line(point=True)
                 .encode(
-                    x=alt.X("fecha_dt:T", title="Mes"),
+                    x=alt.X("fecha_dt:T", title="Mes", axis=alt.Axis(format="%m-%y", tickCount=10)),
                     y=alt.Y("share:Q", title="% del total", axis=alt.Axis(format=".1%")),
                     color=alt.Color("Entidad:N", legend=None)
                 )
                 .properties(height=420)
             )
             st.altair_chart(chart, use_container_width=True)
-
-            # Último valor
             last = merged.sort_values("fecha_dt").tail(1)["share"].iloc[0]
             st.metric("Último % del total", f"{last*100:.2f}%")
-
-# Footer
-st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). UI oculta códigos; trabaja con descripciones.")
