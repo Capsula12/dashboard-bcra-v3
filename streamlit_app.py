@@ -1,12 +1,13 @@
-# streamlit_app.py (v2)
+# streamlit_app.py (v3)
 # Requiere: streamlit pandas altair numpy
-# Espera CSVs en ./data:
+# CSVs esperados en ./data:
 #   - bcra_consolidado.csv (o bcra_consolidado_part*.csv)
 #   - bcra_nomina.csv
 #   - bcra_indicadores.csv
-#   - (opcional) bcra_agregados.csv con columnas: 
+#   - (opcional) bcra_agregados.csv con columnas:
 #       fecha (YYYY-MM), codigo_indicador, indicador, formato,
-#       sistema_financiero, banca_publica, banca_privada, banca_nacional, banca_extranjera, companias_financieras
+#       sistema_financiero, banca_publica, banca_privada,
+#       banca_nacional, banca_extranjera, companias_financieras
 
 import streamlit as st
 import pandas as pd
@@ -79,7 +80,8 @@ def load_indices():
     df = _read_csv_safe(INDICES, dtype=dtypes)
     if df is None or df.empty:
         return pd.DataFrame(columns=dtypes.keys()).astype(dtypes), {}, {}
-    df["formato"] = df["formato"].str.upper().fillna("N")
+    # asegurar strings
+    df["formato"] = df["formato"].astype("string").str.upper().fillna("N")
     var_map = dict(zip(df["codigo_indicador"], df["indicador"]))
     fmt_map = dict(zip(df["codigo_indicador"], df["formato"]))
     return df, var_map, fmt_map
@@ -94,16 +96,15 @@ def load_agregados():
     df["fecha"] = df["fecha"].astype(str)
     df["fecha_dt"] = pd.to_datetime(df["fecha"].str.strip() + "-01", format="%Y-%m-%d", errors="coerce")
     df = df.dropna(subset=["fecha_dt"]).sort_values(["fecha_dt","codigo_indicador"]).reset_index(drop=True)
-    df["formato"] = df["formato"].astype(str).str.upper().replace({"": "N"})
+    # asegurar string
+    if "formato" in df.columns:
+        df["formato"] = df["formato"].astype("string").str.upper().fillna("N")
     return df
 
 df = load_consolidado()
 ent_map = load_nomina_map()
 idx_df, var_map, fmt_map = load_indices()
 agg_df = load_agregados()
-
-def entity_label_from_code(code: str) -> str:
-    return ent_map.get(code, code)
 
 def percent_change(curr, prev):
     if curr is None or prev in (None, 0) or pd.isna(curr) or pd.isna(prev) or prev == 0:
@@ -115,18 +116,18 @@ def format_value(val: float, fmt: str, decimals=2) -> str:
         return "—"
     if (fmt or "").upper() == "P":
         return f"{val:.{decimals}f}%"
-    # formateo es-AR: separador miles punto, decimal coma
+    # formato es-AR
     return f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def color_delta(delta):
     if delta is None:
         return '<span style="color:#888">—</span>'
-    sign = "+" if delta >= 0 else "-"
+    sign = "+" if delta >= 0 else "−"
     color = "#2e7d32" if delta >= 0 else "#c62828"
     return f'<span style="color:{color}">{sign}{abs(delta)*100:.1f}%</span>'
 
-def to_plot_series(series_vals: pd.Series, fmt: str) -> pd.Series:
-    return series_vals/100.0 if (fmt or "").upper()=="P" else series_vals
+def to_plot_series(series_vals: pd.Series, fmt_code: str) -> pd.Series:
+    return series_vals/100.0 if str(fmt_code).upper()=="P" else series_vals
 
 def find_variable_codes_by_hint(hints, top_k=4):
     codes = []
@@ -153,7 +154,7 @@ def default_month_value():
         return candidate
     return df["fecha_dt"].max() if not df.empty else None
 
-st.title("📊 Indicadores del BCRA (v2)")
+st.title("📊 Indicadores del BCRA (v3)")
 
 if df.empty:
     st.warning("No se encontraron CSV en `./data`. Subí `bcra_consolidado.csv` (o partes), `bcra_nomina.csv` y `bcra_indicadores.csv`.")
@@ -199,7 +200,7 @@ with tab_panel:
     rows = []
     for vcode in var_sel:
         vdesc = var_map.get(vcode, vcode)
-        fmt = fmt_map.get(vcode, "N")
+        fmt = str(fmt_map.get(vcode, "N")).upper()
         # actual
         row_now = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == vcode) & (df["fecha_dt"] == month)]
         val_now = row_now["valor"].iloc[0] if not row_now.empty else np.nan
@@ -231,7 +232,7 @@ with tab_panel:
                 unsafe_allow_html=True
             )
 
-            # Mini-plot con comparadores (últimos 18 meses)
+            # Mini-plot (últimos 18 meses) con leyenda abajo
             series = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == r["Código"])][["fecha_dt","valor"]].copy()
             series["serie"] = ent_map.get(ent_code, ent_code)
             plot_frames = [series.rename(columns={"valor":"value"})]
@@ -254,12 +255,13 @@ with tab_panel:
             plot_df["value_plot"] = to_plot_series(plot_df["value"], r["Formato"])
             cutoff = month - pd.DateOffset(months=18)
             plot_df = plot_df[plot_df["fecha_dt"] >= cutoff]
-            axis = alt.Axis(format=(".1%" if r["Formato"].upper()=="P" else None))
+            axis = alt.Axis(format=(".1%" if r["Formato"]=="P" else None))
+            legend = alt.Legend(orient="bottom", direction="horizontal", title=None, labelLimit=160)
             base = alt.Chart(plot_df).mark_line().encode(
-                x=alt.X("fecha_dt:T", title=""),
+                x=alt.X("fecha_dt:T", title="", axis=alt.Axis(format="%m-%y", tickCount=6)),
                 y=alt.Y("value_plot:Q", title="", axis=axis),
-                color=alt.Color("serie:N", title="", scale=alt.Scale(scheme="tableau10"))
-            ).properties(height=120)
+                color=alt.Color("serie:N", legend=legend, scale=alt.Scale(scheme="tableau10"))
+            ).properties(height=140)
             st.altair_chart(base, use_container_width=True)
 
     if agg_df is None:
@@ -321,7 +323,8 @@ with tab_serie:
                 sub["Entidad"] = ent_map.get(e, e)
                 sub["Variable"] = sub["codigo_indicador"].map(lambda c: var_map.get(c, c))
                 sub["Formato"] = sub["codigo_indicador"].map(lambda c: fmt_map.get(c, "N"))
-                sub["ValorPlot"] = np.where(sub["Formato"].str.upper()=="P", sub["valor"]/100.0, sub["valor"])
+                sub["Formato"] = sub["Formato"].astype("string").str.upper().fillna("N")
+                sub["ValorPlot"] = np.where(sub["Formato"]=="P", sub["valor"]/100.0, sub["valor"])
                 plot_frames.append(sub)
 
             if show_agg and agg_df is not None:
@@ -340,8 +343,10 @@ with tab_serie:
                         t = ag[["fecha_dt","codigo_indicador","indicador","formato",col]].rename(columns={col:"valor"})
                         t["Entidad"] = name
                         t["Variable"] = t["codigo_indicador"].map(lambda c: var_map.get(c, c))
+                        # usar formato del indicador y asegurar string
                         t["Formato"] = t["codigo_indicador"].map(lambda c: fmt_map.get(c, "N"))
-                        t["ValorPlot"] = np.where(t["Formato"].str.upper()=="P", t["valor"]/100.0, t["valor"])
+                        t["Formato"] = t["Formato"].astype("string").str.upper().fillna("N")
+                        t["ValorPlot"] = np.where(t["Formato"]=="P", t["valor"]/100.0, t["valor"])
                         long_list.append(t)
                 if long_list:
                     plot_frames.append(pd.concat(long_list, ignore_index=True))
@@ -358,12 +363,11 @@ with tab_serie:
                     .encode(
                         x=x_enc,
                         y=alt.Y("ValorPlot:Q", title="Valor"),
-                        color=alt.Color("Entidad:N", title="Serie")
+                        color=alt.Color("Entidad:N", title="Serie", legend=alt.Legend(orient="bottom"))
                     )
                     .facet(row=alt.Row("Variable:N", title=None))
-                    .properties(height=220)
-                )
-                chart = chart.resolve_scale(y='independent')  # << escalas Y independientes por variable
+                    .properties(height=240)
+                ).resolve_scale(y='independent')
                 st.altair_chart(chart, use_container_width=True)
             else:
                 st.info("No hay datos para graficar en el rango seleccionado.")
@@ -398,7 +402,7 @@ with tab_calc:
                 op = st.selectbox(f"Operación {i}→{i+1}", options=["—"]+ops, index=0, key=f"calc_op_{i}")
                 term_ops.append(None if op=="—" else op)
 
-        # Rango de fechas opcional
+        # Rango de fechas
         min_dt = df["fecha_dt"].min().date()
         max_dt = df["fecha_dt"].max().date()
         range_calc = st.slider(
@@ -453,7 +457,7 @@ with tab_calc:
                     .encode(
                         x=alt.X("fecha_dt:T", title="Mes", axis=alt.Axis(format="%m-%y", tickCount=10)),
                         y=alt.Y("Resultado:Q", title="Resultado"),
-                        color=alt.Color("Entidad:N", title="Entidad")
+                        color=alt.Color("Entidad:N", title="Entidad", legend=alt.Legend(orient="bottom"))
                     )
                     .properties(height=420)
                 )
@@ -493,11 +497,11 @@ with tab_share:
         a = a[(a["fecha_dt"]>=pd.to_datetime(range_share[0])) & (a["fecha_dt"]<=pd.to_datetime(range_share[1]))]
         a = a[["fecha_dt","valor"]].rename(columns={"valor":"ent_val"})
 
-        if agg_df is not None and "sistema_financiero" in (agg_df.columns if hasattr(agg_df, "columns") else []):
+        if agg_df is not None and hasattr(agg_df, "columns") and "sistema_financiero" in agg_df.columns:
             tot = agg_df[agg_df["codigo_indicador"]==var_share][["fecha_dt","sistema_financiero","formato"]].rename(columns={"sistema_financiero":"tot_val"})
         else:
             tot = df[df["codigo_indicador"]==var_share].groupby("fecha_dt", as_index=False)["valor"].sum().rename(columns={"valor":"tot_val"})
-            tot["formato"] = fmt_map.get(var_share, "N")
+            tot["formato"] = str(fmt_map.get(var_share, "N")).upper()
 
         tot = tot[(tot["fecha_dt"]>=pd.to_datetime(range_share[0])) & (tot["fecha_dt"]<=pd.to_datetime(range_share[1]))]
         merged = pd.merge(a, tot, on="fecha_dt", how="inner")
@@ -512,7 +516,7 @@ with tab_share:
                 .encode(
                     x=alt.X("fecha_dt:T", title="Mes", axis=alt.Axis(format="%m-%y", tickCount=10)),
                     y=alt.Y("share:Q", title="% del total", axis=alt.Axis(format=".1%")),
-                    color=alt.Color("Entidad:N", legend=None)
+                    color=alt.Color("Entidad:N", legend=alt.Legend(orient="bottom"))
                 )
                 .properties(height=420)
             )
