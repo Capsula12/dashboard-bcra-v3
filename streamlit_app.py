@@ -1,4 +1,4 @@
-# streamlit_app.py (v4)
+# streamlit_app.py (v6)
 # Requiere: streamlit pandas altair numpy
 # CSVs esperados en ./data:
 #   - bcra_consolidado.csv (o bcra_consolidado_part*.csv)
@@ -15,7 +15,6 @@ import numpy as np
 import altair as alt
 from pathlib import Path
 import glob
-import math
 from datetime import date
 
 st.set_page_config(page_title="Indicadores BCRA", layout="wide")
@@ -61,12 +60,9 @@ def load_consolidado() -> pd.DataFrame:
     if not frames:
         return pd.DataFrame(columns=dtypes.keys()).astype(dtypes)
     df_all = pd.concat(frames, ignore_index=True)
-
-    # tipos y fecha
     df_all["formato"] = df_all["formato"].astype("string").str.upper().fillna("N")
     df_all["fecha"] = df_all["fecha"].astype("string").str.strip()
     df_all["fecha_dt"] = pd.to_datetime(df_all["fecha"] + "-01", format="%Y-%m-%d", errors="coerce")
-
     df_all = df_all.dropna(subset=["fecha_dt"]).sort_values(
         ["fecha_dt","codigo_entidad","codigo_indicador"]
     ).reset_index(drop=True)
@@ -123,13 +119,6 @@ def format_value(val: float, fmt: str, decimals=2) -> str:
         return f"{val:.{decimals}f}%"
     return f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def color_delta(delta):
-    if delta is None:
-        return '<span style="color:#888">—</span>'
-    sign = "+" if delta >= 0 else "−"
-    color = "#2e7d32" if delta >= 0 else "#c62828"
-    return f'<span style="color:{color}">{sign}{abs(delta)*100:.1f}%</span>'
-
 def to_plot_series(series_vals: pd.Series, fmt_code: str) -> pd.Series:
     return series_vals/100.0 if str(fmt_code).upper()=="P" else series_vals
 
@@ -158,13 +147,69 @@ def default_month_value():
         return candidate
     return df["fecha_dt"].max() if not df.empty else None
 
-st.title("📊 Indicadores del BCRA (v4)")
+def tick_values_for_range(start_dt: pd.Timestamp, end_dt: pd.Timestamp):
+    """Genera ticks (fechas) para el eje X sin agrupar datos; ≤10 etiquetas."""
+    start = pd.Timestamp(start_dt.year, start_dt.month, 1)
+    end = pd.Timestamp(end_dt.year, end_dt.month, 1)
+    span_months = (end.year - start.year)*12 + (end.month - start.month) + 1
+
+    if span_months > 60:
+        ticks = pd.date_range(start, end, freq="YS")  # 1 enero de cada año
+        fmt = "%Y"
+    elif span_months > 12:
+        months = pd.date_range(start, end, freq="MS")
+        ticks = [d for d in months if d.month in (1, 7)]  # ene/jul
+        fmt = "%m-%y"
+    else:
+        ticks = pd.date_range(start, end, freq="MS")
+        fmt = "%m-%y"
+
+    if len(ticks) > 10:
+        idx = np.linspace(0, len(ticks)-1, 10).round().astype(int)
+        ticks = [ticks[i] for i in idx]
+    return ticks, fmt
+
+def treat_zeros_long(df_long: pd.DataFrame, value_col: str, group_cols: list, mode: str):
+    """Aplica el tratamiento de ceros a un DF largo (de series).
+       - 'Mantener': no cambia nada
+       - 'Ignorar (saltear meses)': elimina filas con valor==0
+       - 'Reemplazar por dato previo (ffill)': 0 -> NaN y ffill por grupo
+    """
+    if df_long.empty:
+        return df_long
+    if mode.startswith("Mantener"):
+        return df_long
+    out = df_long.copy()
+    if mode.startswith("Ignorar"):
+        return out.loc[out[value_col] != 0].copy()
+    # ffill
+    out.loc[out[value_col] == 0, value_col] = np.nan
+    sort_cols = [c for c in group_cols if c in out.columns] + (["fecha_dt"] if "fecha_dt" in out.columns else [])
+    if sort_cols:
+        out = out.sort_values(sort_cols)
+    if group_cols:
+        out[value_col] = out.groupby([c for c in group_cols if c in out.columns], group_keys=False)[value_col].ffill()
+    else:
+        out[value_col] = out[value_col].ffill()
+    return out
+
+# ---------- UI ----------
+st.title("📊 Indicadores del BCRA (v6)")
+
+# Control global de tratamiento de ceros
+zero_mode = st.selectbox(
+    "Tratamiento de valores 0.00 (posibles faltantes)",
+    options=["Mantener", "Ignorar (saltear meses)", "Reemplazar por dato previo (ffill)"],
+    index=0,
+    help="Si hay meses en 0.00 por falta de dato, podés saltearlos o rellenar con el valor del mes anterior."
+)
 
 if df.empty:
     st.warning("No se encontraron CSV en `./data`. Subí `bcra_consolidado.csv` (o partes), `bcra_nomina.csv` y `bcra_indicadores.csv`.")
     st.stop()
 
-tab_panel, tab_serie, tab_calc, tab_share = st.tabs(["Panel", "Serie", "Calculadora", "Porcentaje del total"])
+# Tabs (sin “Porcentaje del total”)
+tab_panel, tab_serie, tab_calc = st.tabs(["Panel", "Serie", "Calculadora"])
 
 # ===================== PANEL =====================
 with tab_panel:
@@ -231,12 +276,19 @@ with tab_panel:
             st.markdown(f"### {format_value(r['Actual'], r['Formato'])}")
             mm = percent_change(r["Actual"], r["Previo"])
             yy = percent_change(r["Actual"], r["YoY"])
+            # color en el delta
+            sign_mm = "+" if (mm is not None and mm >= 0) else "−"
+            color_mm = "#2e7d32" if (mm is not None and mm >= 0) else "#c62828"
+            sign_yy = "+" if (yy is not None and yy >= 0) else "−"
+            color_yy = "#2e7d32" if (yy is not None and yy >= 0) else "#c62828"
+            mm_txt = f'<span style="color:{color_mm}">{(sign_mm + f"{abs(mm)*100:.1f}%") if mm is not None else "—"}</span>'
+            yy_txt = f'<span style="color:{color_yy}">{(sign_yy + f"{abs(yy)*100:.1f}%") if yy is not None else "—"}</span>'
             st.markdown(
-                f'<span style="font-size:0.9rem;color:#666">M/M-1: {color_delta(mm)} · A/A-1: {color_delta(yy)}</span>',
+                f'<span style="font-size:0.9rem;color:#666">M/M-1: {mm_txt} · A/A-1: {yy_txt}</span>',
                 unsafe_allow_html=True
             )
 
-            # Mini-plot (últimos 18 meses) con leyenda abajo
+            # Mini-plot (últimos 18 meses) con leyenda abajo y tratamiento de ceros
             series = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == r["Código"])][["fecha_dt","valor"]].copy()
             series["serie"] = ent_map.get(ent_code, ent_code)
             plot_frames = [series.rename(columns={"valor":"value"})]
@@ -256,14 +308,21 @@ with tab_panel:
                         tmp["serie"] = label
                         plot_frames.append(tmp[["fecha_dt","value","serie"]])
             plot_df = pd.concat(plot_frames, ignore_index=True) if len(plot_frames)>1 else plot_frames[0]
+
+            # tratar ceros por serie
+            plot_df = treat_zeros_long(plot_df, "value", ["serie"], zero_mode)
+
+            # preparar valores y recorte temporal
             plot_df["value_plot"] = to_plot_series(plot_df["value"], r["Formato"])
             cutoff = month - pd.DateOffset(months=18)
             plot_df = plot_df[plot_df["fecha_dt"] >= cutoff]
-            axis = alt.Axis(format=(".1%" if r["Formato"]=="P" else None))
+
             legend = alt.Legend(orient="bottom", direction="horizontal", title=None, labelLimit=160)
+            tvals, tfmt = tick_values_for_range(plot_df["fecha_dt"].min(), plot_df["fecha_dt"].max())
+            axis_y = alt.Axis(format=(".1%" if r["Formato"]=="P" else None))
             base = alt.Chart(plot_df).mark_line().encode(
-                x=alt.X("fecha_dt:T", title="", axis=alt.Axis(format="%m-%y", tickCount=6)),
-                y=alt.Y("value_plot:Q", title="", axis=axis),
+                x=alt.X("fecha_dt:T", title="", axis=alt.Axis(values=tvals, format=tfmt, tickCount=len(tvals))),
+                y=alt.Y("value_plot:Q", title="", axis=axis_y),
                 color=alt.Color("serie:N", legend=legend, scale=alt.Scale(scheme="tableau10"))
             ).properties(height=140)
             st.altair_chart(base, use_container_width=True)
@@ -310,7 +369,6 @@ with tab_serie:
         else:
             start_dt = pd.to_datetime(date_range[0])
             end_dt = pd.to_datetime(date_range[1])
-            span_months = (end_dt.year - start_dt.year)*12 + (end_dt.month - start_dt.month) + 1
 
             plot_frames = []
             for e in ents:
@@ -322,6 +380,10 @@ with tab_serie:
                 sub["Variable"] = sub["codigo_indicador"].map(lambda c: var_map.get(c, c))
                 sub["Formato"] = sub["codigo_indicador"].map(lambda c: fmt_map.get(c, "N"))
                 sub["Formato"] = sub["Formato"].astype("string").str.upper().fillna("N")
+
+                # tratar ceros por serie (Entidad, Variable)
+                sub = treat_zeros_long(sub, "valor", ["Entidad","Variable"], zero_mode)
+
                 sub["ValorPlot"] = np.where(sub["Formato"]=="P", sub["valor"]/100.0, sub["valor"])
                 plot_frames.append(sub)
 
@@ -343,6 +405,10 @@ with tab_serie:
                         t["Variable"] = t["codigo_indicador"].map(lambda c: var_map.get(c, c))
                         t["Formato"] = t["codigo_indicador"].map(lambda c: fmt_map.get(c, "N"))
                         t["Formato"] = t["Formato"].astype("string").str.upper().fillna("N")
+
+                        # tratar ceros por serie agregada (Entidad, Variable)
+                        t = treat_zeros_long(t, "valor", ["Entidad","Variable"], zero_mode)
+
                         t["ValorPlot"] = np.where(t["Formato"]=="P", t["valor"]/100.0, t["valor"])
                         long_list.append(t)
                 if long_list:
@@ -351,29 +417,14 @@ with tab_serie:
             if plot_frames:
                 final_plot = pd.concat(plot_frames, ignore_index=True)
 
-                # timeUnit + ≤10 ticks
-                if span_months > 60:
-                    time_unit = "year"
-                    xfmt = "%Y"
-                    ticks = min(10, end_dt.year - start_dt.year + 1)
-                elif span_months > 12:
-                    time_unit = "yearmonth"
-                    xfmt = "%m-%y"
-                    ticks = min(10, math.ceil(span_months/6))
-                else:
-                    time_unit = "yearmonth"
-                    xfmt = "%m-%y"
-                    ticks = min(10, span_months)
+                # ticks legibles sin agrupar datos
+                tvals, tfmt = tick_values_for_range(final_plot["fecha_dt"].min(), final_plot["fecha_dt"].max())
 
                 base = (
                     alt.Chart(final_plot)
                     .mark_line(point=True)
                     .encode(
-                        x=alt.X(
-                            f"{time_unit}(fecha_dt):T",
-                            title="Mes",
-                            axis=alt.Axis(format=xfmt, tickCount=ticks, labelOverlap=True)
-                        ),
+                        x=alt.X("fecha_dt:T", title="Mes", axis=alt.Axis(values=tvals, format=tfmt, labelOverlap=True, tickCount=len(tvals))),
                         y=alt.Y("ValorPlot:Q", title="Valor"),
                         color=alt.Color("Entidad:N", title="Serie", legend=alt.Legend(orient="bottom"))
                     )
@@ -440,8 +491,21 @@ with tab_calc:
             if sub.empty:
                 st.info("No hay datos en ese rango.")
             else:
+                # pivot ancho por entidad-fecha
                 pivot = sub.pivot_table(index=["codigo_entidad","fecha_dt"], columns="codigo_indicador", values="valor", aggfunc="last").reset_index()
                 pivot = pivot[pivot["codigo_entidad"].isin(ents2)].copy()
+                pivot = pivot.sort_values(["codigo_entidad","fecha_dt"])
+
+                # tratamiento de ceros en inputs
+                if zero_mode.startswith("Ignorar"):
+                    for v in vars_sel:
+                        if v in pivot.columns:
+                            pivot.loc[pivot[v] == 0, v] = np.nan
+                elif zero_mode.startswith("Reemplazar"):
+                    for v in vars_sel:
+                        if v in pivot.columns:
+                            pivot.loc[pivot[v] == 0, v] = np.nan
+                            pivot[v] = pivot.groupby("codigo_entidad", group_keys=False)[v].ffill()
 
                 def apply_expr(row):
                     nums = []
@@ -470,19 +534,14 @@ with tab_calc:
                 pivot["Resultado"] = pivot.apply(apply_expr, axis=1)
                 pivot["Entidad"] = pivot["codigo_entidad"].map(lambda c: ent_map.get(c, c))
 
-                # Eje X con timeUnit + ≤10 ticks
-                span_m = (pd.to_datetime(range_calc[1]).year - pd.to_datetime(range_calc[0]).year)*12 + \
-                         (pd.to_datetime(range_calc[1]).month - pd.to_datetime(range_calc[0]).month) + 1
-                if span_m > 60:
-                    tu, xfmt, ticks = "year", "%Y", min(10, pd.to_datetime(range_calc[1]).year - pd.to_datetime(range_calc[0]).year + 1)
-                else:
-                    tu, xfmt, ticks = "yearmonth", "%m-%y", min(10, span_m)
+                # ticks legibles sin agrupar datos
+                tvals, tfmt = tick_values_for_range(pivot["fecha_dt"].min(), pivot["fecha_dt"].max())
 
                 chart = (
                     alt.Chart(pivot.dropna(subset=["Resultado"]))
                     .mark_line(point=True)
                     .encode(
-                        x=alt.X(f"{tu}(fecha_dt):T", title="Mes", axis=alt.Axis(format=xfmt, tickCount=ticks)),
+                        x=alt.X("fecha_dt:T", title="Mes", axis=alt.Axis(values=tvals, format=tfmt, tickCount=len(tvals))),
                         y=alt.Y("Resultado:Q", title="Resultado"),
                         color=alt.Color("Entidad:N", title="Entidad", legend=alt.Legend(orient="bottom"))
                     )
@@ -493,74 +552,5 @@ with tab_calc:
                 with st.expander("Ver datos"):
                     st.dataframe(pivot[["Entidad","fecha_dt","Resultado"]].sort_values(["Entidad","fecha_dt"]), use_container_width=True)
 
-# ===================== PORCENTAJE DEL TOTAL =====================
-with tab_share:
-    st.subheader("Participación sobre el total")
-    c1, c2 = st.columns([1,2])
-    with c1:
-        ent_share = st.selectbox(
-            "Entidad",
-            options=sorted(df["codigo_entidad"].unique().tolist(), key=lambda c: ent_map.get(c, c)),
-            index=(sorted(df["codigo_entidad"].unique().tolist()).index(DEFAULT_ENTITY_CODE) if DEFAULT_ENTITY_CODE in df["codigo_entidad"].unique() else 0),
-            format_func=lambda c: ent_map.get(c, c),
-            key="share_ent"
-        )
-        var_share = st.selectbox(
-            "Variable",
-            options=sorted(df["codigo_indicador"].unique().tolist(), key=lambda v: var_map.get(v, v)),
-            index=0,
-            format_func=lambda v: var_map.get(v, v),
-            key="share_var"
-        )
-        min_dt = df["fecha_dt"].min().date()
-        max_dt = df["fecha_dt"].max().date()
-        range_share = st.slider(
-            "Rango temporal",
-            min_value=min_dt, max_value=max_dt, value=(min_dt, max_dt),
-            key="share_range"
-        )
-
-    with c2:
-        a = df[(df["codigo_entidad"]==ent_share) & (df["codigo_indicador"]==var_share)].copy()
-        a = a[(a["fecha_dt"]>=pd.to_datetime(range_share[0])) & (a["fecha_dt"]<=pd.to_datetime(range_share[1]))]
-        a = a[["fecha_dt","valor"]].rename(columns={"valor":"ent_val"})
-
-        if agg_df is not None and hasattr(agg_df, "columns") and "sistema_financiero" in agg_df.columns:
-            tot = agg_df[agg_df["codigo_indicador"]==var_share][["fecha_dt","sistema_financiero","formato"]].rename(columns={"sistema_financiero":"tot_val"})
-        else:
-            tot = df[df["codigo_indicador"]==var_share].groupby("fecha_dt", as_index=False)["valor"].sum().rename(columns={"valor":"tot_val"})
-            tot["formato"] = str(fmt_map.get(var_share, "N")).upper()
-
-        tot = tot[(tot["fecha_dt"]>=pd.to_datetime(range_share[0])) & (tot["fecha_dt"]<=pd.to_datetime(range_share[1]))]
-        merged = pd.merge(a, tot, on="fecha_dt", how="inner")
-        if merged.empty:
-            st.info("No hay datos para calcular participación en ese rango.")
-        else:
-            merged["share"] = np.where(merged["tot_val"]==0, np.nan, merged["ent_val"]/merged["tot_val"])
-            merged["Entidad"] = ent_map.get(ent_share, ent_share)
-
-            # Eje X con timeUnit + ≤10 ticks
-            span_m = (pd.to_datetime(range_share[1]).year - pd.to_datetime(range_share[0]).year)*12 + \
-                     (pd.to_datetime(range_share[1]).month - pd.to_datetime(range_share[0]).month) + 1
-            if span_m > 60:
-                tu, xfmt, ticks = "year", "%Y", min(10, pd.to_datetime(range_share[1]).year - pd.to_datetime(range_share[0]).year + 1)
-            else:
-                tu, xfmt, ticks = "yearmonth", "%m-%y", min(10, span_m)
-
-            chart = (
-                alt.Chart(merged)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X(f"{tu}(fecha_dt):T", title="Mes", axis=alt.Axis(format=xfmt, tickCount=ticks)),
-                    y=alt.Y("share:Q", title="% del total", axis=alt.Axis(format=".1%")),
-                    color=alt.Color("Entidad:N", legend=alt.Legend(orient="bottom"))
-                )
-                .properties(height=420)
-            )
-            st.altair_chart(chart, use_container_width=True)
-
-            last = merged.sort_values("fecha_dt").tail(1)["share"].iloc[0]
-            st.metric("Último % del total", f"{last*100:.2f}%")
-
 # Footer
-st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). UI oculta códigos; trabaja con descripciones. v4")
+st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). UI oculta códigos; trabaja con descripciones. v6")
