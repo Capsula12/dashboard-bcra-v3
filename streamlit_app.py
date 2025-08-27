@@ -583,7 +583,7 @@ with tab_rank:
 
         fmt_rank = str(fmt_map.get(var_rank, "N")).upper()
         if fmt_rank == "P":
-            st.caption("📌 La variable es porcentual: en “Valores totales” se usa **promedio** del período (no suma).")
+            st.caption("📌 En “Top valores totales” se usa **promedio** del período, omitiendo 0.00.")
 
     with c2:
         # Filtrar: excluir entidades agrupadas (codigos que empiezan con 'AA')
@@ -601,42 +601,52 @@ with tab_rank:
             # Tratamiento de ceros según selector global
             sub = treat_zeros_long(sub, "valor", ["codigo_entidad"], zero_mode)
 
-            # ---------- Top valores totales ----------
-            if fmt_rank == "P":
-                totals = sub.groupby("codigo_entidad", as_index=False)["valor"].mean().rename(columns={"valor": "metric"})
-                metric_label = "Promedio en período"
-                totals["metric_plot"] = totals["metric"] / 100.0
-                x_axis_tot = alt.Axis(title=metric_label, format=".1%")
-                text_fmt_tot = ".1%"
-            else:
-                totals = sub.groupby("codigo_entidad", as_index=False)["valor"].sum().rename(columns={"valor": "metric"})
-                metric_label = "Suma en período"
-                totals["metric_plot"] = totals["metric"]
-                x_axis_tot = alt.Axis(title=metric_label, format=",.2f")
-                text_fmt_tot = ",.2f"
+# ---------- Top valores totales ----------
+# Siempre promedio del período, omitiendo 0.00 (independiente del formato)
+sub_nz = sub[sub["valor"] != 0].copy()
+if sub_nz.empty:
+    st.info("No hay datos (no nulos) para calcular promedios en este rango.")
+else:
+    totals = (
+        sub_nz.groupby("codigo_entidad", as_index=False)["valor"]
+        .mean()
+        .rename(columns={"valor": "metric"})
+    )
+    metric_label = "Promedio en período (sin 0.00)"
+    totals["Entidad"] = totals["codigo_entidad"].map(lambda c: ent_map.get(c, c))
 
-            totals["Entidad"] = totals["codigo_entidad"].map(lambda c: ent_map.get(c, c))
-            top_tot = totals.sort_values("metric_plot", ascending=False).head(int(topn))
+    if fmt_rank == "P":
+        totals["metric_plot"] = totals["metric"] / 100.0
+        x_axis_tot = alt.Axis(title=metric_label, format=".1%")
+        text_fmt_tot = ".1%"
+    else:
+        totals["metric_plot"] = totals["metric"]
+        x_axis_tot = alt.Axis(title=metric_label, format=",.2f")
+        text_fmt_tot = ",.2f"
 
-            st.markdown("### 🏆 Top valores totales")
-            if top_tot.empty:
-                st.info("No hay datos suficientes para calcular totales.")
-            else:
-                chart_tot = (
-                    alt.Chart(top_tot)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("metric_plot:Q", axis=x_axis_tot),
-                        y=alt.Y("Entidad:N", sort="-x", title=None),
-                        tooltip=[
-                            alt.Tooltip("Entidad:N"),
-                            alt.Tooltip("metric:Q", title=metric_label, format=text_fmt_tot),
-                        ],
-                    )
-                    .properties(height=28 * len(top_tot) + 20)
-                )
-                text_tot = chart_tot.mark_text(align="left", dx=3).encode(text=alt.Text("metric_plot:Q", format=text_fmt_tot))
-                st.altair_chart(chart_tot + text_tot, use_container_width=True)
+    top_tot = totals.sort_values("metric_plot", ascending=False).head(int(topn))
+
+    st.markdown("### 🏆 Top valores totales (promedio)")
+    if top_tot.empty:
+        st.info("No hay datos suficientes para calcular promedios.")
+    else:
+        chart_tot = (
+            alt.Chart(top_tot)
+            .mark_bar()
+            .encode(
+                x=alt.X("metric_plot:Q", axis=x_axis_tot),
+                y=alt.Y("Entidad:N", sort="-x", title=None),
+                tooltip=[
+                    alt.Tooltip("Entidad:N"),
+                    alt.Tooltip("metric:Q", title=metric_label, format=text_fmt_tot),
+                ],
+            )
+            .properties(height=28 * len(top_tot) + 20)
+        )
+        text_tot = chart_tot.mark_text(align="left", dx=3).encode(
+            text=alt.Text("metric_plot:Q", format=text_fmt_tot)
+        )
+        st.altair_chart(chart_tot + text_tot, use_container_width=True)
 
             # ---------- Top variación % (último vs primero del rango) ----------
             s = sub.sort_values(["codigo_entidad", "fecha_dt"])
