@@ -802,13 +802,16 @@ with tab_sys:
             else:
                 sub["Entidad"] = sub["codigo_entidad"].apply(lambda c: display_name(c, show_full_names))
                 sub["Variable"] = var_map.get(var_sel_sys, var_sel_sys)
-                sub["Formato"] = str(fmt_map.get(var_sel_sys, "N")).upper()
+                # tomar el formato de la variable como escalar
+                fmt_var = str(fmt_map.get(var_sel_sys, "N")).upper()
+                sub["Formato"] = fmt_var
+                # tratamiento y valor para graficar usando el fmt escalar
                 sub = treat_zeros_long(sub, "valor", ["Entidad"], zero_mode)
-                sub["ValorPlot"] = np.where(sub["Formato"] == "P", sub["valor"] / 100.0, sub["valor"])
-
+                sub["ValorPlot"] = np.where(fmt_var == "P", sub["valor"] / 100.0, sub["valor"])
+                # ticks y axis: usar fmt_var (escalar) para elegir el formato del eje
                 tvals, tfmt = tick_values_for_range(sub["fecha_dt"].min(), sub["fecha_dt"].max())
-                y_axis = alt.Axis(title="Valor", format=(".1%" if sub["Formato"] == "P" else None))
-
+                y_axis = alt.Axis(title="Valor", format=(".1%" if fmt_var == "P" else None))
+                
                 chart_cmp = (
                     alt.Chart(sub)
                     .mark_line(point=True)
