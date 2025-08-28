@@ -1,4 +1,4 @@
-# streamlit_app.py (v8.1)
+# streamlit_app.py (v8.1 -> v8.1.2)
 # Requiere: streamlit pandas altair numpy
 # CSVs esperados en ./data:
 #   - bcra_consolidado.csv (o bcra_consolidado_part*.csv)
@@ -17,7 +17,7 @@ from pathlib import Path
 import glob
 from datetime import date
 
-st.set_page_config(page_title="Indicadores BCRA", layout="wide")
+st.set_page_config(page_title="Indicadores BCRA (v8.1.2)", layout="wide")
 
 DATA_DIR = Path("./data")
 MASTER = DATA_DIR / "bcra_consolidado.csv"
@@ -106,7 +106,6 @@ def load_nomina_maps():
         if s is None:
             return pd.Series([], dtype="string")
         s = s.astype("string").fillna("").astype(str).str.strip()
-        # quitar el literal "<NA>"
         s = s.replace({"<NA>": ""})
         return s
 
@@ -261,7 +260,7 @@ def display_name(code: str, show_full: bool) -> str:
     return lbl
 
 # ---------- UI global ----------
-st.title("📊 Indicadores del BCRA (v8.1)")
+st.title("📊 Indicadores del BCRA (v8.1.2)")
 
 # Control alias/nombre
 show_full_names = st.checkbox("Mostrar nombre completo", value=False, help="Si está desactivado, se muestran ALIAS.")
@@ -374,7 +373,7 @@ with tab_panel:
             if not plot_df.empty:
                 legend = alt.Legend(orient="bottom", direction="horizontal", title=None, labelLimit=160)
                 tvals, tfmt = tick_values_for_range(plot_df["fecha_dt"].min(), plot_df["fecha_dt"].max())
-                axis_y = alt.Axis(format=(".1%" if r["Formato"] == "P" else None))
+                axis_y = alt.Axis( format=(".1%" if r["Formato"] == "P" else None) )
                 base = alt.Chart(plot_df).mark_line().encode(
                     x=alt.X("fecha_dt:T", title="", axis=alt.Axis(values=tvals, format=tfmt, tickCount=len(tvals))),
                     y=alt.Y("value_plot:Q", title="", axis=axis_y),
@@ -802,28 +801,63 @@ with tab_sys:
             else:
                 sub["Entidad"] = sub["codigo_entidad"].apply(lambda c: display_name(c, show_full_names))
                 sub["Variable"] = var_map.get(var_sel_sys, var_sel_sys)
-                # tomar el formato de la variable como escalar
-                fmt_var = str(fmt_map.get(var_sel_sys, "N")).upper()
+
+                # ---------- robust patch: asegurar formato escalar, numericidad y axis válido ----------
+                fmt_var = str(fmt_map.get(var_sel_sys, "N") or "N").upper()
                 sub["Formato"] = fmt_var
-                # tratamiento y valor para graficar usando el fmt escalar
+
+                # asegurar que 'valor' sea numérico y no tenga valores raros
+                sub["valor"] = pd.to_numeric(sub["valor"], errors="coerce")
+
+                # tratar ceros por agrupación
                 sub = treat_zeros_long(sub, "valor", ["Entidad"], zero_mode)
-                sub["ValorPlot"] = np.where(fmt_var == "P", sub["valor"] / 100.0, sub["valor"])
-                # ticks y axis: usar fmt_var (escalar) para elegir el formato del eje
-                tvals, tfmt = tick_values_for_range(sub["fecha_dt"].min(), sub["fecha_dt"].max())
-                y_axis = alt.Axis(title="Valor", format=(".1%" if fmt_var == "P" else None))
-                
-                chart_cmp = (
-                    alt.Chart(sub)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("fecha_dt:T", title="Mes", axis=alt.Axis(values=tvals, format=tfmt, tickCount=len(tvals))),
-                        y=alt.Y("ValorPlot:Q", axis=y_axis),
-                        color=alt.Color("Entidad:N", title="Agrupación", legend=alt.Legend(orient="bottom")),
-                        tooltip=[alt.Tooltip("Entidad:N"), alt.Tooltip("fecha_dt:T"), alt.Tooltip("valor:Q")]
-                    )
-                    .properties(height=360)
-                )
-                st.altair_chart(chart_cmp, use_container_width=True)
+
+                # calcular ValorPlot según formato escalar
+                if fmt_var == "P":
+                    sub["ValorPlot"] = sub["valor"] / 100.0
+                else:
+                    sub["ValorPlot"] = sub["valor"]
+
+                # limpiar filas inválidas antes de graficar
+                sub = sub.dropna(subset=["fecha_dt", "ValorPlot"]).copy()
+                if sub.empty:
+                    st.info("No hay datos válidos para graficar después del tratamiento (fechas/valores faltantes).")
+                else:
+                    # preparar ticks
+                    tvals, tfmt = tick_values_for_range(sub["fecha_dt"].min(), sub["fecha_dt"].max())
+
+                    # construir axis kwargs SOLO si el formato es válido (cadena)
+                    fmt_axis = ".1%" if fmt_var == "P" else None
+                    axis_kwargs = {"title": "Valor"}
+                    if isinstance(fmt_axis, str) and fmt_axis:
+                        axis_kwargs["format"] = fmt_axis
+                    # crear el objeto Axis (Altair validará aquí)
+                    y_axis = alt.Axis(**axis_kwargs)
+
+                    # intentar graficar y, en caso de error, mostrar info útil de depuración
+                    try:
+                        chart_cmp = (
+                            alt.Chart(sub)
+                            .mark_line(point=True)
+                            .encode(
+                                x=alt.X("fecha_dt:T", title="Mes", axis=alt.Axis(values=tvals, format=tfmt, tickCount=len(tvals))),
+                                y=alt.Y("ValorPlot:Q", axis=y_axis),
+                                color=alt.Color("Entidad:N", title="Agrupación", legend=alt.Legend(orient="bottom")),
+                                tooltip=[alt.Tooltip("Entidad:N"), alt.Tooltip("fecha_dt:T", title="Fecha"), alt.Tooltip("valor:Q", title="Valor")]
+                            )
+                            .properties(height=360)
+                        )
+                        st.altair_chart(chart_cmp, use_container_width=True)
+
+                    except Exception as e:
+                        # mostrar el error y datos para diagnosticar
+                        st.error(f"Error al renderizar gráfico: {type(e).__name__}: {e}")
+                        st.markdown("**Depuración rápida:**")
+                        st.write("fmt_var (valor y tipo):", repr(fmt_var), " — tipo:", type(fmt_var))
+                        st.write("Primeras filas de `sub` (fecha_dt, valor, ValorPlot, Formato):")
+                        st.dataframe(sub[["fecha_dt", "valor", "ValorPlot", "Formato"]].head(20))
+                        st.write("Valores únicos en 'Formato':", sub["Formato"].unique().tolist())
+                        st.info("Si ves formatos raros o strings en 'valor', revisá bcra_indicadores.csv (columna 'formato') o la limpieza de 'valor' en el consolidado.")
 
 # Footer
-st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). ALIAS habilitados; nombres largos opcionales. v8.1")
+st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). ALIAS habilitados; nombres largos opcionales. v8.1.2")
