@@ -1,4 +1,4 @@
-# streamlit_app.py (v8)
+# streamlit_app.py (v8.1)
 # Requiere: streamlit pandas altair numpy
 # CSVs esperados en ./data:
 #   - bcra_consolidado.csv (o bcra_consolidado_part*.csv)
@@ -95,17 +95,31 @@ def load_nomina_maps():
     df = _read_csv_safe(NOMINA)
     if df is None or df.empty:
         return {}, {}
-    # normalizar nombres de columnas
+    # normalizar nombres de columnas (tolerante a mayúsculas)
     cols = {c.lower(): c for c in df.columns}
     code_col = cols.get("codigo_entidad", "codigo_entidad")
     name_col = cols.get("entidad", "entidad")
     alias_col = cols.get("alias", None)
-    if alias_col is None:
-        # si no hay alias, alias = entidad
-        alias_map = dict(zip(df[code_col].astype("string"), df[name_col].astype("string")))
-    else:
-        alias_map = dict(zip(df[code_col].astype("string"), df[alias_col].astype("string")))
-    ent_map = dict(zip(df[code_col].astype("string"), df[name_col].astype("string")))
+
+    # convertir a strings "limpios" (sin <NA>, sin None)
+    def to_clean_str_series(s):
+        if s is None:
+            return pd.Series([], dtype="string")
+        s = s.astype("string").fillna("").astype(str).str.strip()
+        # quitar el literal "<NA>"
+        s = s.replace({"<NA>": ""})
+        return s
+
+    codes = to_clean_str_series(df[code_col])
+    names = to_clean_str_series(df[name_col])
+    aliases = to_clean_str_series(df[alias_col]) if alias_col else names.copy()
+
+    # si alias está vacío, caer al nombre largo
+    alias_use = [a if a else n for a, n in zip(aliases, names)]
+
+    # construir mapas con claves/valores str
+    alias_map = dict(zip(codes.tolist(), alias_use))
+    ent_map = dict(zip(codes.tolist(), names.tolist()))
     return ent_map, alias_map
 
 @st.cache_data(show_spinner=False)
@@ -161,7 +175,7 @@ def find_variable_codes_by_hint(hints, top_k=4):
             hint_low = hint.lower()
             matches = [c for c, d in var_map.items() if hint_low in str(d).lower()]
             for m in matches:
-                if m not in codes:
+                if m not in codes and m not in HIDE_VARS:
                     codes.append(m)
             if len(codes) >= top_k:
                 break
@@ -222,13 +236,32 @@ def treat_zeros_long(df_long: pd.DataFrame, value_col: str, group_cols: list, mo
     return out
 
 def label_for(code: str, show_full: bool) -> str:
-    """Devuelve ALIAS (por defecto) o nombre completo si show_full=True."""
+    """Devuelve SIEMPRE un str: ALIAS (default) o nombre completo si show_full=True."""
+    s = "" if code is None else str(code)
+    if not s or s == "<NA>":
+        return ""
     if show_full:
-        return ent_map.get(code, alias_map.get(code, code))
-    return alias_map.get(code, ent_map.get(code, code))
+        name = ent_map.get(s) or alias_map.get(s) or s
+    else:
+        name = alias_map.get(s) or ent_map.get(s) or s
+    # blindaje contra NaN/NA
+    try:
+        if name is None or (isinstance(name, float) and np.isnan(name)) or str(name) in ("", "<NA>"):
+            name = s
+    except Exception:
+        name = s
+    return str(name)
+
+def display_name(code: str, show_full: bool) -> str:
+    """Etiqueta preferida para entidades y AA*: alias/nombre o fallback a AA_GROUPS."""
+    s = "" if code is None else str(code)
+    lbl = label_for(s, show_full)
+    if (not lbl or lbl == s) and s.startswith("AA"):
+        return AA_GROUPS.get(s, s)
+    return lbl
 
 # ---------- UI global ----------
-st.title("📊 Indicadores del BCRA (v8)")
+st.title("📊 Indicadores del BCRA (v8.1)")
 
 # Control alias/nombre
 show_full_names = st.checkbox("Mostrar nombre completo", value=False, help="Si está desactivado, se muestran ALIAS.")
@@ -253,16 +286,16 @@ with tab_panel:
     st.subheader("Panel")
     colA, colB, colC = st.columns([1, 1, 1])
     with colA:
-        ent_codes_sorted = sorted(df["codigo_entidad"].dropna().unique().tolist(), key=lambda c: label_for(c, show_full_names))
+        ent_codes = [str(c) for c in df["codigo_entidad"].astype("string").tolist() if pd.notna(c) and str(c) != "<NA>" and str(c)]
+        ent_codes_sorted = sorted(set(ent_codes), key=lambda c: display_name(c, show_full_names))
         default_ent_idx = ent_codes_sorted.index(DEFAULT_ENTITY_CODE) if DEFAULT_ENTITY_CODE in ent_codes_sorted else 0
         ent_code = st.selectbox(
             "Entidad", options=ent_codes_sorted, index=default_ent_idx,
-            format_func=lambda code: label_for(code, show_full_names),
+            format_func=lambda code: display_name(code, show_full_names),
             key="panel_ent"
         )
     with colB:
-        # variables disponibles (excluye HIDE_VARS)
-        all_vars = sorted([v for v in df["codigo_indicador"].dropna().unique().tolist() if v not in HIDE_VARS],
+        all_vars = sorted([v for v in df["codigo_indicador"].dropna().astype(str).unique().tolist() if v not in HIDE_VARS],
                           key=lambda v: var_map.get(v, v))
         default_var_codes = [c for c in find_variable_codes_by_hint(DEFAULT_VAR_HINTS, top_k=4) if c in all_vars]
         var_sel = st.multiselect(
@@ -326,9 +359,9 @@ with tab_panel:
                 unsafe_allow_html=True
             )
 
-            # Mini-plot (últimos 18 meses) con leyenda abajo y tratamiento de ceros
+            # Mini-plot (últimos 18 meses)
             series = df[(df["codigo_entidad"] == ent_code) & (df["codigo_indicador"] == r["Código"])][["fecha_dt", "valor"]].copy()
-            series["serie"] = label_for(ent_code, show_full_names)
+            series["serie"] = display_name(ent_code, show_full_names)
             plot_df = series.rename(columns={"valor": "value"}).copy()
 
             # tratar ceros por serie
@@ -356,16 +389,17 @@ with tab_serie:
     st.subheader("Serie")
     c1, c2 = st.columns([1, 2])
     with c1:
+        ent_options = [str(c) for c in df["codigo_entidad"].astype("string").tolist() if pd.notna(c) and str(c) != "<NA>" and str(c)]
         ents = st.multiselect(
             "Entidades",
-            options=sorted(df["codigo_entidad"].unique().tolist(), key=lambda c: label_for(c, show_full_names)),
-            default=[DEFAULT_ENTITY_CODE] if DEFAULT_ENTITY_CODE in df["codigo_entidad"].unique() else [],
-            format_func=lambda c: label_for(c, show_full_names),
+            options=sorted(set(ent_options), key=lambda c: display_name(c, show_full_names)),
+            default=[DEFAULT_ENTITY_CODE] if DEFAULT_ENTITY_CODE in ent_options else [],
+            format_func=lambda c: display_name(c, show_full_names),
             key="serie_ents"
         )
         vars_series = st.multiselect(
             "Variables",
-            options=sorted([v for v in df["codigo_indicador"].unique().tolist() if v not in HIDE_VARS],
+            options=sorted([v for v in df["codigo_indicador"].astype("string").dropna().unique().tolist() if v not in HIDE_VARS],
                            key=lambda v: var_map.get(v, v)),
             default=find_variable_codes_by_hint(DEFAULT_VAR_HINTS, top_k=2),
             format_func=lambda v: var_map.get(v, v),
@@ -396,7 +430,7 @@ with tab_serie:
                 sub = sub[(sub["fecha_dt"] >= start_dt) & (sub["fecha_dt"] <= end_dt)]
                 if sub.empty:
                     continue
-                sub["Entidad"] = label_for(e, show_full_names)
+                sub["Entidad"] = display_name(e, show_full_names)
                 sub["Variable"] = sub["codigo_indicador"].map(lambda c: var_map.get(c, c))
                 sub["Formato"] = sub["codigo_indicador"].map(lambda c: fmt_map.get(c, "N"))
                 sub["Formato"] = sub["Formato"].astype("string").str.upper().fillna("N")
@@ -437,11 +471,12 @@ with tab_calc:
     st.subheader("Calculadora de variables")
     c1, c2 = st.columns([1, 2])
     with c1:
+        ent_options2 = [str(c) for c in df["codigo_entidad"].astype("string").tolist() if pd.notna(c) and str(c) != "<NA>" and str(c)]
         ents2 = st.multiselect(
             "Entidades",
-            options=sorted(df["codigo_entidad"].unique().tolist(), key=lambda c: label_for(c, show_full_names)),
-            default=[DEFAULT_ENTITY_CODE] if DEFAULT_ENTITY_CODE in df["codigo_entidad"].unique() else [],
-            format_func=lambda c: label_for(c, show_full_names),
+            options=sorted(set(ent_options2), key=lambda c: display_name(c, show_full_names)),
+            default=[DEFAULT_ENTITY_CODE] if DEFAULT_ENTITY_CODE in ent_options2 else [],
+            format_func=lambda c: display_name(c, show_full_names),
             key="calc_ents"
         )
         st.caption("Construí una fórmula: Termo1 (op) Termo2 (op) Termo3 ...")
@@ -452,7 +487,7 @@ with tab_calc:
         for i in range(1, 6):
             v = st.selectbox(
                 f"Variable {i}",
-                options=["—"] + sorted([vv for vv in df["codigo_indicador"].unique().tolist() if vv not in HIDE_VARS],
+                options=["—"] + sorted([vv for vv in df["codigo_indicador"].astype("string").dropna().unique().tolist() if vv not in HIDE_VARS],
                                        key=lambda x: var_map.get(x, x)),
                 index=0,
                 format_func=lambda x: var_map.get(x, x) if x != "—" else "—",
@@ -524,7 +559,7 @@ with tab_calc:
                     return res
 
                 pivot["Resultado"] = pivot.apply(apply_expr, axis=1)
-                pivot["Entidad"] = pivot["codigo_entidad"].map(lambda c: label_for(c, show_full_names))
+                pivot["Entidad"] = pivot["codigo_entidad"].apply(lambda c: display_name(c, show_full_names))
 
                 # ticks legibles sin agrupar datos
                 tvals, tfmt = tick_values_for_range(pivot["fecha_dt"].min(), pivot["fecha_dt"].max())
@@ -552,7 +587,7 @@ with tab_rank:
     with c1:
         var_rank = st.selectbox(
             "Variable",
-            options=sorted([v for v in df["codigo_indicador"].unique().tolist() if v not in HIDE_VARS],
+            options=sorted([v for v in df["codigo_indicador"].astype("string").dropna().unique().tolist() if v not in HIDE_VARS],
                            key=lambda v: var_map.get(v, v)),
             index=0,
             format_func=lambda v: var_map.get(v, v),
@@ -574,7 +609,7 @@ with tab_rank:
 
     with c2:
         # Excluir agrupadas (AA*) en rankings
-        df_rank = df[~df["codigo_entidad"].str.startswith("AA", na=False)].copy()
+        df_rank = df[~df["codigo_entidad"].astype("string").str.startswith("AA", na=False)].copy()
         sub = df_rank[df_rank["codigo_indicador"] == var_rank].copy()
         sub = sub[
             (sub["fecha_dt"] >= pd.to_datetime(range_rank[0])) &
@@ -598,7 +633,7 @@ with tab_rank:
                     .rename(columns={"valor": "metric"})
                 )
                 metric_label = "Promedio en período (sin 0.00)"
-                totals["Entidad"] = totals["codigo_entidad"].map(lambda c: label_for(c, show_full_names))
+                totals["Entidad"] = totals["codigo_entidad"].apply(lambda c: display_name(c, show_full_names))
 
                 if fmt_rank == "P":
                     totals["metric_plot"] = totals["metric"] / 100.0
@@ -640,7 +675,7 @@ with tab_rank:
             ch = pd.merge(first, last, on="codigo_entidad", how="inner")
             ch = ch[(~ch["first"].isna()) & (~ch["last"].isna()) & (ch["first"] != 0)]
             ch["delta"] = ch["last"] / ch["first"] - 1.0
-            ch["Entidad"] = ch["codigo_entidad"].map(lambda c: label_for(c, show_full_names))
+            ch["Entidad"] = ch["codigo_entidad"].apply(lambda c: display_name(c, show_full_names))
 
             col_up, col_dn = st.columns(2)
             with col_up:
@@ -699,14 +734,13 @@ with tab_sys:
     if sys_df.empty:
         st.info("No se encontraron series para los indicadores de sistema. Verificá que existan en los CSV.")
     else:
-        # Tomar un valor por fecha e indicador (si hay múltiples filas por entidades AA, se toma el último)
+        # Un valor por fecha e indicador
         sys_df = sys_df.sort_values(["fecha_dt"])
         sys_df = sys_df.groupby(["fecha_dt", "codigo_indicador"], as_index=False).agg(
             indicador=("indicador", "last"),
             formato=("formato", "last"),
             valor=("valor", "last"),
         )
-        # tratamiento de ceros global
         sys_df = treat_zeros_long(sys_df, "valor", [], zero_mode)
         sys_df["ValorPlot"] = to_plot_series(sys_df["valor"], "N")
         tvals, tfmt = tick_values_for_range(sys_df["fecha_dt"].min(), sys_df["fecha_dt"].max())
@@ -730,8 +764,7 @@ with tab_sys:
     st.markdown("#### Comparador por agrupaciones (AA*)")
     colL, colR = st.columns([1,2])
     with colL:
-        # Variables permitidas (excluye las de sistema)
-        allowed_vars = sorted([v for v in df["codigo_indicador"].unique().tolist() if v not in HIDE_VARS],
+        allowed_vars = sorted([v for v in df["codigo_indicador"].astype("string").dropna().unique().tolist() if v not in HIDE_VARS],
                               key=lambda v: var_map.get(v, v))
         var_sel_sys = st.selectbox(
             "Variable",
@@ -739,17 +772,14 @@ with tab_sys:
             format_func=lambda v: var_map.get(v, v),
             key="sys_var"
         )
-        # Grupos AA seleccionables
         aa_opts = list(AA_GROUPS.keys())
-        aa_default = aa_opts  # por defecto todos
         aa_pick = st.multiselect(
             "Agrupaciones",
             options=aa_opts,
-            default=aa_default,
-            format_func=lambda c: alias_map.get(c, AA_GROUPS.get(c, c)) if not show_full_names else ent_map.get(c, AA_GROUPS.get(c, c)),
+            default=aa_opts,
+            format_func=lambda c: display_name(c, show_full_names),
             key="sys_aa"
         )
-        # Rango temporal
         min_dt = df["fecha_dt"].min().date()
         max_dt = df["fecha_dt"].max().date()
         range_sys = st.slider(
@@ -770,11 +800,9 @@ with tab_sys:
             if sub.empty:
                 st.info("No hay datos para esa variable/agrupaciones en el rango.")
             else:
-                sub["Entidad"] = sub["codigo_entidad"].map(lambda c: label_for(c, show_full_names) if (c in alias_map or c in ent_map) else AA_GROUPS.get(c, c))
+                sub["Entidad"] = sub["codigo_entidad"].apply(lambda c: display_name(c, show_full_names))
                 sub["Variable"] = var_map.get(var_sel_sys, var_sel_sys)
-                sub["Formato"] = fmt_map.get(var_sel_sys, "N")
-                sub["Formato"] = str(sub["Formato"]).upper()
-                # tratar ceros por agrupación
+                sub["Formato"] = str(fmt_map.get(var_sel_sys, "N")).upper()
                 sub = treat_zeros_long(sub, "valor", ["Entidad"], zero_mode)
                 sub["ValorPlot"] = np.where(sub["Formato"] == "P", sub["valor"] / 100.0, sub["valor"])
 
@@ -795,4 +823,4 @@ with tab_sys:
                 st.altair_chart(chart_cmp, use_container_width=True)
 
 # Footer
-st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). ALIAS habilitados; nombres largos opcionales. v8")
+st.caption("Fuente: TXT BCRA (Entfin/Tec_Cont). ALIAS habilitados; nombres largos opcionales. v8.1")
