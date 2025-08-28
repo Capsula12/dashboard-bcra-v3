@@ -373,7 +373,13 @@ with tab_panel:
             if not plot_df.empty:
                 legend = alt.Legend(orient="bottom", direction="horizontal", title=None, labelLimit=160)
                 tvals, tfmt = tick_values_for_range(plot_df["fecha_dt"].min(), plot_df["fecha_dt"].max())
-                axis_y = alt.Axis( format=(".1%" if r["Formato"] == "P" else None) )
+                # construir axis Y sólo si corresponde (evita pasar format=None)
+                fmt_axis = ".1%" if str(r["Formato"]).upper() == "P" else None
+                axis_kwargs = {"title": ""}
+                if isinstance(fmt_axis, str) and fmt_axis:
+                    axis_kwargs["format"] = fmt_axis
+                axis_y = alt.Axis(**axis_kwargs)
+
                 base = alt.Chart(plot_df).mark_line().encode(
                     x=alt.X("fecha_dt:T", title="", axis=alt.Axis(values=tvals, format=tfmt, tickCount=len(tvals))),
                     y=alt.Y("value_plot:Q", title="", axis=axis_y),
